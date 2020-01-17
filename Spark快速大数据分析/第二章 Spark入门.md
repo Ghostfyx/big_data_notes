@@ -11,3 +11,9 @@ public static void main(String[] args){}
 if __name == '__main__':
 ```
 
+```scala
+def main(args:Array[String]) {  
+       
+    }  
+```
+
