@@ -60,3 +60,148 @@ Spark默认提供两种分区划分器：哈希分区划分器（HashPartitioner
 
 目前有两种类型的基础RDD：一种是并行集合（Paralleized Collections），接受一个已经存在的Scala集合，然后进行并行计算；另外一种是从外部存储创建RDD，外部存储可以是从文本文件或者HDFS中读取。这两种类型的RDD获取子RDD等一系列拓展，形成**“血统”**关系图。
 
+### 3.4.1 并行化集合创建操作
+
+并行化集合是通过SparkContext的paralleize方法，在一个已经存在的集合上创建的，集合的对象都会被复制，创建出一个可并行化操作的分布式数据集RDD。
+
+- Java语言
+
+	``` java
+	public <T> JavaRDD<T> parallelize(List<T> list, int numSlices)；//指定分区数量
+	
+	public <T> JavaRDD<T> parallelize(List<T> list) {
+	        return this.parallelize(list, this.sc().defaultParallelism()); //使用默认分区数量，根据本机Spark分配到的CPU核数决定
+	}
+	```
+
+- Python语言
+
+	```python
+	    def parallelize(self, c, numSlices=None):
+	        """
+	        Distribute a local Python collection to form an RDD. Using xrange
+	        is recommended if the input represents a range for performance.
+	
+	        >>> sc.parallelize([0, 2, 3, 4, 6], 5).glom().collect()
+	        [[0], [2], [3], [4], [6]]
+	        >>> sc.parallelize(xrange(0, 6, 2), 5).glom().collect()
+	        [[], [0], [], [2], [4]]
+	        """
+	```
+
+- Scala
+
+	```
+	
+	```
+
+	### 3.4.2 外部存储创建操作
+
+	​		Spark可以将任何Hadoop所支持的存储资源转换为RDD，例本地文件（需要网络文件系统，所有节点都必须能访问到）、HDFS、HBase、Amazon S3等。Spark支持文本文件，SequenceFiles和任何Hadoop InputFormat格式。
+
+	#### 3.4.2.1 Java API
+
+	```
+	
+	```
+
+	#### 3.4.2.2 Python API
+
+- textFile：使用textFile可以将本地文件或HDFS文件转换为RDD，该操作支持整个文件目录的读取，文件可以是文本或压缩文件（自动执行解压缩，并加载数据）。
+
+	```python
+	def textFile(self, name, minPartitions=None, use_unicode=True):
+	        """
+	        Read a text file from HDFS, a local file system (available on all
+	        nodes), or any Hadoop-supported file system URI, and return it as an
+	        RDD of Strings.
+	
+	        If use_unicode is False, the strings will be kept as `str` (encoding
+	        as `utf-8`), which is faster and smaller than unicode. (Added in
+	        Spark 1.2)
+	
+	        >>> path = os.path.join(tempdir, "sample-text.txt")
+	        >>> with open(path, "w") as testFile:
+	        ...    _ = testFile.write("Hello world!")
+	        >>> textFile = sc.textFile(path)
+	        >>> textFile.collect()
+	        [u'Hello world!']
+	        """
+	```
+
+- wholeTextFiles：读取文件目录中的小文件，返回（文件名，文件内容）键值对。
+
+	```python
+	    def wholeTextFiles(self, path, minPartitions=None, use_unicode=True):
+	        """
+	        Read a directory of text files from HDFS, a local file system
+	        (available on all nodes), or any  Hadoop-supported file system
+	        URI. Each file is read as a single record and returned in a
+	        key-value pair, where the key is the path of each file, the
+	        value is the content of each file.
+	
+	        If use_unicode is False, the strings will be kept as `str` (encoding
+	        as `utf-8`), which is faster and smaller than unicode. (Added in
+	        Spark 1.2)
+	
+	        For example, if you have the following files::
+	
+	          hdfs://a-hdfs-path/part-00000
+	          hdfs://a-hdfs-path/part-00001
+	          ...
+	          hdfs://a-hdfs-path/part-nnnnn
+	
+	        Do C{rdd = sparkContext.wholeTextFiles("hdfs://a-hdfs-path")},
+	        then C{rdd} contains::
+	
+	          (a-hdfs-path/part-00000, its content)
+	          (a-hdfs-path/part-00001, its content)
+	          ...
+	          (a-hdfs-path/part-nnnnn, its content)
+	
+	        .. note:: Small files are preferred, as each file will be loaded
+	            fully in memory.
+	
+	        >>> dirPath = os.path.join(tempdir, "files")
+	        >>> os.mkdir(dirPath)
+	        >>> with open(os.path.join(dirPath, "1.txt"), "w") as file1:
+	        ...    _ = file1.write("1")
+	        >>> with open(os.path.join(dirPath, "2.txt"), "w") as file2:
+	        ...    _ = file2.write("2")
+	        >>> textFiles = sc.wholeTextFiles(dirPath)
+	        >>> sorted(textFiles.collect())
+	        [(u'.../1.txt', u'1'), (u'.../2.txt', u'2')]
+	        """
+	```
+
+- SequenceFile：SequenceFile[K,V]可以将SequenceFile转换为RDD，SequenceFile文件是Hadoop用来存储二进制形式的key-value对而设计的一种文本文件。
+
+	```python
+	    def sequenceFile(self, path, keyClass=None, valueClass=None, keyConverter=None,
+	                     valueConverter=None, minSplits=None, batchSize=0):
+	        """
+	        Read a Hadoop SequenceFile with arbitrary key and value Writable class from HDFS,
+	        a local file system (available on all nodes), or any Hadoop-supported file system URI.
+	        The mechanism is as follows:
+	
+	            1. A Java RDD is created from the SequenceFile or other InputFormat, and the key
+	               and value Writable classes
+	            2. Serialization is attempted via Pyrolite pickling
+	            3. If this fails, the fallback is to call 'toString' on each key and value
+	            4. C{PickleSerializer} is used to deserialize pickled objects on the Python side
+	
+	        :param path: path to sequncefile
+	        :param keyClass: fully qualified classname of key Writable class
+	               (e.g. "org.apache.hadoop.io.Text")
+	        :param valueClass: fully qualified classname of value Writable class
+	               (e.g. "org.apache.hadoop.io.LongWritable")
+	        :param keyConverter:
+	        :param valueConverter:
+	        :param minSplits: minimum splits in dataset
+	               (default min(2, sc.defaultParallelism))
+	        :param batchSize: The number of Python objects represented as a single
+	               Java object. (default 0, choose batchSize automatically)
+	        """
+	```
+
+	
