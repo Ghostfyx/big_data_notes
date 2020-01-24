@@ -178,22 +178,22 @@ RDD本身不是严格意义上的集合，但是支持数学上的集合操作�
 
 ​									表3-2 对一个数据为$\{1,2,3,3\}$的RDD就行基本的RDD转换
 
-| 函数名      | 目的                                                       | 示例              | 结果 |
-| ----------- | ---------------------------------------------------------- | ----------------- | ---- |
-| map()       | 将元素应用于RDD中的每个元素，将返回值构成新的RDD           | rdd.map(x -> x+1) |      |
-| flatMap()   | 将元素应用于RDD的每个元素，将返回迭代器的元素构成新的RDD。 |                   |      |
-| filter( )   | 条件过滤函数，返回通过过滤元素组成的新RDD                  |                   |      |
-| distinct( ) | 去重                                                       |                   |      |
-| sample()    | 对RDD采样，以及是否替换                                    |                   |      |
+| 函数名                                        | 目的                                                         |
+| --------------------------------------------- | ------------------------------------------------------------ |
+| map(func)                                     | 将元素应用于RDD中的每个元素，将返回值构成新的RDD             |
+| flatMap(func)                                 | 将元素应用于RDD的每个元素，将返回迭代器的元素构成新的RDD。   |
+| filter(*func*)                                | 条件过滤函数，返回通过过滤元素组成的新RDD                    |
+| distinct( )                                   | 去重                                                         |
+| sample(*withReplacement*, *fraction*, *seed*) | 数据采样，有三个可选参数：设置是否放回（withReplacement）、采样的百分比（*fraction*）、随机数生成器的种子（seed） |
 
  									表3-3:对数据分别为{1, 2, 3}和{3, 4, 5}的RDD进行针对两个RDD的转化操作 
 
-| 函数名         | 目的                                     | 示例                    | 结果 |
-| -------------- | ---------------------------------------- | ----------------------- | ---- |
-| union()        | 生成一个包含两个 RDD 中所有元 素的 RDD   | rdd.union(other)        |      |
-| intersection() | 求两个 RDD 共同的元素的 RDD              | rdd.intersection(other) |      |
-| subtract()     | 移除一个 RDD 中的内容(例如移 除训练数据) | rdd.subtract(other)     |      |
-| cartesian()    | 与另一个 RDD 的笛卡儿积                  | rdd.cartesian(other)    |      |
+| 函数名                       | 目的                                     |
+| ---------------------------- | ---------------------------------------- |
+| union(*otherDataset*)        | 生成一个包含两个 RDD 中所有元 素的 RDD   |
+| intersection(*otherDataset*) | 求两个 RDD 共同的元素的 RDD              |
+| subtract(*otherDataset*)     | 移除一个 RDD 中的内容(例如移 除训练数据) |
+| cartesian(*otherDataset*)    | 与另一个 RDD 的笛卡儿积                  |
 
 #### 3. 行动操作
 
@@ -201,19 +201,19 @@ RDD 的一些行动操作会以普通集合或者值的形式将 RDD 的部分�
 
    							表3-4:对一个数据为{1, 2, 3, 3}的RDD进行基本的RDD行动操作 
 
-| 函数名                                   | 目的                                            | 示例 | 结果 |
-| ---------------------------------------- | ----------------------------------------------- | ---- | ---- |
-| collect( )                               | 返回 RDD 中的所有元素                           |      |      |
-| count()                                  | RDD 中的元素个数                                |      |      |
-| countByValue()                           | 各元素在 RDD 中出现的次数                       |      |      |
-| take(num)                                | 从 RDD 中返回 num 个元素                        |      |      |
-| top(num)                                 | 从 RDD 中返回最前面的 num 个元素                |      |      |
-| takeOrdered(num) (ordering)              | 从 RDD 中按照提供的顺序返 回最前面的 num 个元素 |      |      |
-| takeSample(withReplacement, num, [seed]) | 从 RDD 中返回任意一些元素                       |      |      |
-| reduce(func)                             | 并行整合 RDD 中所有数据 (例如 sum)              |      |      |
-| fold(zero)(func)                         | 和 reduce() 一样，但是需要 提供初始值           |      |      |
-| aggregate(zeroValue) (seqOp, combOp)     | 和 reduce() 相似，但是通常 返回不同类型的函数   |      |      |
-| foreach(func)                            | 对 RDD 中的每个元素使用给 定的函数              |      |      |
+| 函数名                                   | 目的                                                         |
+| ---------------------------------------- | ------------------------------------------------------------ |
+| collect( )                               | 返回 RDD 中的所有元素                                        |
+| count()                                  | RDD 中的元素个数                                             |
+| countByValue()                           | 各元素在 RDD 中出现的次数                                    |
+| take(num)                                | 从 RDD 中返回 num 个元素                                     |
+| top(num)                                 | 从 RDD 中返回最前面的 num 个元素                             |
+| takeOrdered(num) (ordering)              | 从 RDD 中按照提供的顺序返 回最前面的 num 个元素              |
+| takeSample(withReplacement, num, [seed]) | 从 RDD 中返回任意一些元素                                    |
+| reduce(func)                             | 并行整合 RDD 中所有数据 (例如 sum)                           |
+| fold(zero)(func)                         | 和 reduce() 一样，但是需要提供初始值，先将初值应用于RDD元素中，在执行func操作 |
+| aggregate(zeroValue) (seqOp, combOp)     | 和 reduce() 相似，但是通常 返回不同类型的函数                |
+| foreach(func)                            | 对 RDD 中的每个元素使用给 定的函数                           |
 
 ### 3.5.2 在不同RDD类型间的转换
 
