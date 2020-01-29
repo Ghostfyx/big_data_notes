@@ -91,21 +91,81 @@ Spark默认提供两种分区划分器：哈希分区划分器（HashPartitioner
 
 - Scala
 
-	```
-	
-	```
+  ```
+  
+  ```
 
-	### 3.4.2 外部存储创建操作
+  ### 3.4.2 外部存储创建操作
 
-	​		Spark可以将任何Hadoop所支持的存储资源转换为RDD，例本地文件（需要网络文件系统，所有节点都必须能访问到）、HDFS、HBase、Amazon S3等。Spark支持文本文件，SequenceFiles和任何Hadoop InputFormat格式。
+  ​		Spark可以将任何Hadoop所支持的存储资源转换为RDD，例本地文件（需要网络文件系统，所有节点都必须能访问到）、HDFS、HBase、Amazon S3等。Spark支持文本文件，SequenceFiles和任何Hadoop InputFormat格式。
 
-	#### 3.4.2.1 Java API
+  #### 3.4.2.1 Java API
 
-	```
-	
-	```
+  ```java
+    /**
+     * Read a text file from HDFS, a local file system (available on all nodes), or any
+     * Hadoop-supported file system URI, and return it as an RDD of Strings.
+     */
+    def textFile(path: String): JavaRDD[String] = sc.textFile(path)
+  ```
 
-	#### 3.4.2.2 Python API
+  ```java
+   /**
+     * Read a directory of text files from HDFS, a local file system (available on all nodes), or any
+     * Hadoop-supported file system URI. Each file is read as a single record and returned in a
+     * key-value pair, where the key is the path of each file, the value is the content of each file.
+     *
+     * <p> For example, if you have the following files:
+     * {{{
+     *   hdfs://a-hdfs-path/part-00000
+     *   hdfs://a-hdfs-path/part-00001
+     *   ...
+     *   hdfs://a-hdfs-path/part-nnnnn
+     * }}}
+     *
+     * Do `val rdd = sparkContext.wholeTextFile("hdfs://a-hdfs-path")`,
+     *
+     * <p> then `rdd` contains
+     * {{{
+     *   (a-hdfs-path/part-00000, its content)
+     *   (a-hdfs-path/part-00001, its content)
+     *   ...
+     *   (a-hdfs-path/part-nnnnn, its content)
+     * }}}
+     *
+     * @note Small files are preferred, large file is also allowable, but may cause bad performance.
+     * @note On some filesystems, `.../path/&#42;` can be a more efficient way to read all files
+     *       in a directory rather than `.../path/` or `.../path`
+     * @note Partitioning is determined by data locality. This may result in too few partitions
+     *       by default.
+     *
+     * @param path Directory to the input data files, the path can be comma separated paths as the
+     *             list of inputs.
+     * @param minPartitions A suggestion value of the minimal splitting number for input data.
+     * @return RDD representing tuples of file path and the corresponding file content
+     */
+    def wholeTextFiles(
+        path: String,
+        minPartitions: Int = defaultMinPartitions): RDD[(String, String)] = withScope {
+      assertNotStopped()
+      val job = NewHadoopJob.getInstance(hadoopConfiguration)
+      // Use setInputPaths so that wholeTextFiles aligns with hadoopFile/textFile in taking
+      // comma separated files as input. (see SPARK-7155)
+      NewFileInputFormat.setInputPaths(job, path)
+      val updateConf = job.getConfiguration
+      new WholeTextFileRDD(
+        this,
+        classOf[WholeTextFileInputFormat],
+        classOf[Text],
+        classOf[Text],
+        updateConf,
+        minPartitions).map(record => (record._1.toString, record._2.toString)).setName(path)
+    }
+  ```
+
+  
+
+  #### 3.4.2.2 Python API
 
 - textFile：使用textFile可以将本地文件或HDFS文件转换为RDD，该操作支持整个文件目录的读取，文件可以是文本或压缩文件（自动执行解压缩，并加载数据）。
 
@@ -203,5 +263,42 @@ Spark默认提供两种分区划分器：哈希分区划分器（HashPartitioner
 	               Java object. (default 0, choose batchSize automatically)
 	        """
 	```
+
+- HadoopFile：由于Hadoop的接口有新旧两个版本，所以Spark为了兼容Hadoop的版本，也提供了两套接口：newAPIHadoopFile和hadoopFile。
+
+	```scala
+	def newAPIHadoopFile[K, V, F <: NewInputFormat[K, V]](
+	      path: String,
+	      fClass: Class[F],
+	      kClass: Class[K],
+	      vClass: Class[V],
+	      conf: Configuration = hadoopConfiguration): RDD[(K, V)] = withScope {
+	    assertNotStopped()
+	```
+
+- HadoopRDD与newAPIHadoopRDD：将Hadoop输入类型转换为RDD，每个HDFS数据块成为一个RDD分区。
+
+	```scala
+	def newAPIHadoopRDD[K, V, F <: NewInputFormat[K, V]](
+	      conf: Configuration = hadoopConfiguration,
+	      fClass: Class[F],
+	      kClass: Class[K],
+	      vClass: Class[V]): RDD[(K, V)] = withScope {
+	    assertNotStopped()
+	
+	    // This is a hack to enforce loading hdfs-site.xml.
+	    // See SPARK-11227 for details.
+	    FileSystem.getLocal(conf)
+	
+	    // Add necessary security credentials to the JobConf. Required to access secure HDFS.
+	    val jconf = new JobConf(conf)
+	    SparkHadoopUtil.get.addCredentials(jconf)
+	    new NewHadoopRDD(this, fClass, kClass, vClass, jconf)
+	  }
+	```
+
+	## 3.5  转换操作
+
+	### 3.5.1 基础转换操作
 
 	
