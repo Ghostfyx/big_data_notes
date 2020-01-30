@@ -1,4 +1,4 @@
-# Spark 编程模型
+Spark 编程模型
 
 ## 3.3 编程接口
 
@@ -276,7 +276,7 @@ Spark默认提供两种分区划分器：哈希分区划分器（HashPartitioner
 	    assertNotStopped()
 	```
 
-- HadoopRDD与newAPIHadoopRDD：将Hadoop输入类型转换为RDD，每个HDFS数据块成为一个RDD分区。
+- HadoopRDD与newAPIHadoopRDD：针对新旧两个版本Hadoop，将Hadoop输入类型转换为RDD，每个HDFS数据块成为一个RDD分区。
 
 	```scala
 	def newAPIHadoopRDD[K, V, F <: NewInputFormat[K, V]](
@@ -297,8 +297,82 @@ Spark默认提供两种分区划分器：哈希分区划分器（HashPartitioner
 	  }
 	```
 
-	## 3.5  转换操作
+## 3.5 转换操作
 
-	### 3.5.1 基础转换操作
+### 3.5.1 基础转换操作
 
-	
+- map[U] (f : (T) => U) : RDD[U] —— 对RDD中的每个元素都执行一次函数f，原RDD中的元素在新RDD中有且只有一个。
+
+- distinct( ): RDD[ (T) ]——去除RDD中的重复元素，返回所有元素不重复的RDD。
+
+- distinct(numPartitions : Int) : RDD[T] ——去除RDD中的重复元素，返回指定分区数的RDD。
+
+- flatMap[U] (f : (T) => Traversable[U] ): RDD[U]——与map操作类似，区别是flatMap操作中的原RDD每个元素可以返回多个元素构成新RDD。
+
+- coalesce(numPartitions : Int, shuffle : Boolean = false) : RDD[T]
+
+- repartition(numPartitions : Int) : RDD[T]——coalesce和repartition都是对RDD重新分区，coalesce操作默认使用HashPartitions进行重分区，第一个参数是分区数目，第二个参数是为是否洗牌（shuffle）默认false。repartition操作是coalesce函数第二个参数为true的实现。
+
+- randomSplit(weights : Array[Double], seed : utils.random.nextLong) : Array[RDD[T])——根据权重weights将一个RDD分割为多个RDD，注意权重总和为1，会按照权重比例划分，权重越高被划分的几率越高。
+
+- glom( ) : RDD[Array[T]] ——glom操作是RDD中每个分区所有类型为T的数组转变成元素类型为T的数组。
+
+	```shell
+	// 定义3个分区的RDD，使用glom操作将每个分区中的元素放到一个数组中
+	scala> var rdd = sc.makeRDD(1 to 10, 3)
+	scala> rdd.glom().collect
+	res0: Array[Array[Int]] = Array(Array(1, 2, 3), Array(4, 5, 6), Array(7, 8, 9, 10))
+	```
+
+- Union(other: RDD[T]): RDD[T]——将两个RDD合并，返回两个RDD的并集，返回元素不去重。
+
+- intersection(other: RDD[T]): RDD[T]
+
+- intersection(other: RDD[T], numPartitions: Int): RDD[T]
+
+- intersection(other: RDD[T], partitioner: Partitioner): RDD[T]
+
+	intersection操作类似于SQL中的innerJoin操作，返回两个元素交集，返回结果去重；numPartitions指定分区数，Partitoner指定分区方式。
+
+- subtract(other: RDD[T]): RDD[T]
+
+- subtract(other: RDD[T], numPartitions: Int): RDD[T]
+
+- subtract(other: RDD[T], partitioner: Partitioner): RDD[T]
+
+	subtract操作返回在RDD中出现，而otherRDD中未出现的元素，返回结果不去重。
+
+- mapPartitons[U] (f : (Iteratot[T] => Iterator[U], preservesPartitioning: Boolean = false)): RDD[U]
+
+- mapPartitionsWitIndex[U] (f :(index : Int, Iteratot[T] => Iterator[U], preservesPartitioning: Boolean = false)): RDD[U]
+
+	mapPartitons操作与map操作类似，不同的是映射参数由RDD中的每个元素编程了RDD中每个分区的迭代器。参数preservesPartitioning表示是否保留父RDD的partitioner分区信息。如果在mapper过程中需要频繁创建额外对象，推荐使用mapPartitons操作，例如：对RDD分区使用数据库链接，Json解析器重用(Spark快速大数据分析)。mapPartitionsWitIndex输入参数多了RDD的各个分区索引。
+
+- zip[U] (other: RDD[U]): RDD[(T, U)]
+
+- zipPartitions[B, V] (rdd2: RDD[B])(f: (Iterator[T], Iteratror[B]) => Iterator[V] ): RDD[V]
+
+- zipPartitions[B, V] (rdd2: RDD[B], preservesPartitioning)(f: (Iterator[T], Iteratror[B]) => Iterator[V] ): RDD[V]
+
+- zipPartitions[B, ,C, V] (rdd2: RDD[B], rdd3: RDD[C], preservesPartitioning: Boolean)(f: (Iterator[T], Iteratror[B], Iteratror[C]) => Iterator[V] ): RDD[V]
+
+- zipPartitions[B, C, D, V] (rdd2: RDD[B], rdd3: RDD[C], rdd4: RDD[D])(f: (Iterator[T], Iteratror[B], Iteratror[C], Iteratror[D], Iteratror[V]) => Iterator[V] ): RDD[V]
+
+- zipPartitions[B, C, D, V] (rdd2: RDD[B], rdd3: RDD[C], rdd4: RDD[D], preservesPartitioning: Boolean)(f: (Iterator[T], Iteratror[B], Iteratror[C], Iteratror[D], Iteratror[V]) => Iterator[V] ): RDD[V]
+
+	zip操作用于将两个RDD组合成Key/Value形式的RDD（PairRDD），这里默认两个RDD的分区数与分区的元素数量相同。zipPartitons操作将多个RDD按照Partition组合成为新的RDD，要求分区数量一致，分区内元素数量无要求。
+
+- zipWithIndex( ): RDD[(T, Long)]
+
+- zipWithUniqueld( ): RDD[(T, Long)]
+
+	zipWithIndex操作将RDD中的元素和这个元素在RDD中的ID(索引号)组合成键值二元组对返回；zipWithUniqueld操作将RDD中的元素和一个唯一ID组合成键/值对，唯一ID生成算法如下：1. 每个分区中第一个元素的唯一ID为该分区索引号；2. 每个分区中第n个元素的唯一ID为：前一个元素的唯一ID + 该RDD的总分区数。
+
+	zipWithIndex需要启动一个Spark作业来计算每个分区开始的索引号，而zipWithUniqueld不需要。
+
+## 3.5.2 键值转换操作
+
+
+
+
+
