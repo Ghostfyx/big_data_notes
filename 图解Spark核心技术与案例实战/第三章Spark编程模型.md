@@ -1,4 +1,4 @@
-Spark 编程模型
+# 第三章Spark 编程模型
 
 ## 3.3 编程接口
 
@@ -372,7 +372,121 @@ Spark默认提供两种分区划分器：哈希分区划分器（HashPartitioner
 
 ## 3.5.2 键值转换操作
 
+- partitonBy(partitone : Partitioner): RDD[K, V]——根据partitoner分区函数将原RDD重新分区，生成新的**ShuffleRDD**，这里会对原RDD进行Shuffle操作
+- mapValues[U] (f:(V) => U): RDD[K, U]——针对键值对K/V中的Value进行map操作，返回新的Value，Key不变
+- flatMapValues[U] (f: (V) => Traversable[U]): RDD[K, U]——针对键值对K/V中的Value进行flatMap操作，返回多个Value，Key保持不变。
+- combineByKey[C] (createCombiner: (V) => C, mergeValue: (C, V) => C, mergeCombiners: (C, C) => C): RDD[(K, C)]
+- combineByKey[C] (createCombiner: (V) => C, mergeValue: (C, V) => C, mergeCombiners: (C, C) => C, numPartitons: Int): RDD[(K, C)]
+- combineByKey[C] (createCombiner: (V) => C, mergeValue: (C, V) => C, mergeCombiners: (C, C) => C, partitoner: Partitoner, mapSideCombine: Boolean = true, serializer: Serializer = null): RDD[(K, C)]
 
+combineByKey的操作用于将RDD[K, V]转换为RDD[K, C]，combineByKey中参数具体含义如下：
 
+1. createCombiner：组合器函数，用于将V类型转换为C类型；
+2. mergeValue：合并值函数，将一个C类型和一个V类型值合并为一个C类型，输入 (V, C)，输出C
+3. mergeCombiners：合并组合器函数，用于将两个C类型值合并成一个C类型，输入为(C, C)，输出为C
+4. numPartitons：结果RDD分区数，默认保持原有分区
+5. partitioner：分区器/分区函数，默认HashPartitoner
+6. mapSideCombine：是否在Map端进行Combine操作，类似于MapReduce中的Combine，默认true
 
+```python
+rdd1 = sc.parallelize([("A", 1), ("A", 2), ("B", 2), ("C", 3), ("B", 1)], 3)
+rdd2 = rdd1.combineByKey(
+    # 将原RDD中的value转换为value_
+    createCombiner=(lambda v: str(v) + '_'),
+    # 合并值函数
+    mergeValue=(lambda c, v: str(c)+'@'+str(v)),
+    # 合并器函数
+    mergeCombiners=(lambda c1, c2: str(c1)+'$'+str(c2)),
+    numPartitions=3
+)
+print(rdd2.collect())
+# [('B', '2_$1_'), ('C', '3_'), ('A', '1_$2_')]
+```
+
+- foldByKey(zeroValue: V) (func: (V, V) => V): RDD[(K, V)]
+- foldByKey(zeroValue: V, numPartitons: Int) (func: (V, V) => V): RDD[(K, V)]
+- foldByKey(zeroValue: V, partitoner: Partitoner) (func: (V, V) => V): RDD[(K, V)]
+
+foldByKey操作用于RDD[K, V]根据K将V做折叠，合并处理，其中参数zeroValue表示先根据func函数将zeroValue应用于V，进行初始化V，再使用func函数应用于初始化的V。
+
+```python
+rdd1 = sc.parallelize([("A", 1), ("A", 2), ("B", 2), ("C", 3), ("B", 1)], 3)
+rdd2 = rdd1.foldByKey(
+    zeroValue=2,
+    func=(lambda v1, v2: v1+v2)
+)
+print(rdd2.collect())
+# [('B', 7), ('C', 5), ('A', 7)]
+rdd3 = rdd1.foldByKey(
+    # 将zeroValue=0应用于每个V，得到[("A", 0*1),("A", 0*2),("B", 0*2), ("B",0*1), ("c",0*3)]
+    zeroValue=0,
+    # 将初始化后的[("A", 0),("A", 0)]应用于[("A",0*0)]
+    func=(lambda v1, v2: v1*v2)
+)
+print(rdd3.collect())
+# [('B', 0), ('C', 0), ('A', 0)]
+```
+
+- reduceByKey(func: (V, V) => V): RDD[(K,V)]——将RDD[(K,V)]中的每一个K对应的V合并到集合中。
+- reduceByKey(func: (V, V) => V, numPartitions: Int): RDD[(K, V)]
+- reduceByKey(partitioner: Partitioner, func: (V, V) => V): RDD[(K, V)]
+- reduceByKeyLocally(func: (V, V) => V): RDD[(K, V)]
+- groupByKey(): RDD[(K, Iterator[V])]
+- groupByKey(numPartitions: Int): RDD[(K, Iterator[V])]
+- groupByKey(partitioner: Partitioner): RDD[(K, Iterator[V])]
+- cogruop[W] (other: RDD[(K, W)]):RDD[(K, (Iterator[V], Iterator[W]))]
+- cogruop[W] (other: RDD[(K, W),  numPartitions: Int]):RDD[(K, (Iterator[V], Iterator[W]))]
+- cogruop[W] (partitioner: Partitioner, other: RDD[(K, W)]):RDD[(K, (Iterator[V], Iterator[W]))]
+- cogruop[W1, W2] (other1: RDD[(K, W1)], other2: RDD[(K, W2)]):RDD[(K, (Iterator[V], Iterator[W1], Iterator[W2]))]
+- cogruop[W1, W2] (other1: RDD[(K, W1)], other2: RDD[(K, W2)], numPartitions: Int):RDD[(K, (Iterator[V], Iterator[W1], Iterator[W2]))]
+- cogruop[W1, W2] (partitioner: Partitioner, other1: RDD[(K, W1)], other2: RDD[(K, W2)]):RDD[(K, (Iterator[V], Iterator[W1], Iterator[W2]))]
+- cogruop[W1, W2, W3] (other1: RDD[(K, W1)], other2: RDD[(K, W2)], other3:RDD[(K, W3)] ):RDD[(K, (Iterator[V], Iterator[W1], Iterator[W2], Iterator[W3]))]
+- cogruop[W1, W2, W3] (other1: RDD[(K, W1)], other2: RDD[(K, W2)], other3:RDD[(K, W3)],numPartitions: Int):RDD[(K, (Iterator[V], Iterator[W1], Iterator[W2], Iterator[W3]))]
+- cogruop[W1, W2, W3] (partitioner: Partitioner,other1: RDD[(K, W1)], other2: RDD[(K, W2)], other3:RDD[(K, W3)] ):RDD[(K, (Iterator[V], Iterator[W1], Iterator[W2], Iterator[W3]))]
+
+cogroup相当于SQL中的全外连接，返回左右RDD中的记录，关联不上则为空，可传入1-3个RDD，numPartitions指定分区数，partitioner指定分区函数。
+
+- join[W] (other: RDD[(K, W)]) : RDD[(K, (V, W))]
+- join[W] (other: RDD[(K, W)], numPartitions: Int) : RDD[(K, (V, W))]
+- join[W] (partitioner: Partitioner, other: RDD[(K, W)]) : RDD[(K, (V, W))]
+- fullOuterJoin[W] (other: RDD[(K, W)]) : RDD[(K, (Option[V],Option[W]))]
+- fullOuterJoin[W] (other: RDD[(K, W)], numPartitions: Int) : RDD[(K, (Option[V],Option[W]))]
+- fullOuterJoin[W] (partitioner: Partitioner, other: RDD[(K, W)]) : RDD[(K, (Option[V],Option[W]))]
+- leftOuterJoin[W] (other: RDD[(K, W)]) : RDD[(K, (Option[V],Option[W]))]
+- leftOuterJoin[W] (other: RDD[(K, W)], numPartitions: Int) : RDD[(K, (Option[V],Option[W]))]
+- leftOuterJoin[W] (partitioner: Partitioner, other: RDD[(K, W)]) : RDD[(K, (Option[V],Option[W]))]
+- rightOuterJoin[W] (other: RDD[(K, W)]) : RDD[(K, (Option[V],Option[W]))]
+- rightOuterJoin[W] (other: RDD[(K, W)], numPartitions: Int) : RDD[(K, (Option[V],Option[W]))]
+- rightOuterJoin[W] (partitioner: Partitioner, other: RDD[(K, W)]) : RDD[(K, (Option[V],Option[W]))]
+- subtractByKey[W] (other: RDD[(K, W)]): RDD[(K, W)]
+- subtractByKey[W] (other: RDD[(K, W)], numPartitions: Int): RDD[(K, W)]
+- subtractByKey[W] (other: RDD[(K, W)], partitioner: Partitioner): RDD[(K, W)]
+
+Join，fullOuterJoin，leftOutJoin，rightOutJoin都是针对 RDD[(K, W)]中K相等的连接操作，对应内链接（inner join），全连接，左连接和右连接，连接方式如下所示：
+
+<img src="https://www.runoob.com/wp-content/uploads/2019/01/sql-join.png" style="zoom:67%;" />
+
+subtractByKey操作返回在RDD[(K, V)]中出现，而otherRDD中未出现的元素，返回结果不去重。与subtract类似。
+
+## 3.6 控制操作
+
+Spark可以将RDD持久化到内存或磁盘系统中，把RDD持久化到内存中可以极大提高迭代计算与各计算模型中的数据共享，一般情况将Executor节点60%内存用于缓存数据，40%用于执行任务。Spark使用cache和persist( )操作持久化。
+
+- cache( ):RDD[T]
+- persist( ): RDD[T]
+- persist( level: StorageLevel):RDD[T]
+
+Spark中使用checkPoint操作设置检查点，checkPoint操作将切断该RDD与之前的依赖关系（血统），对于包含宽依赖的长血统RDD是非常有用的，避免占用过多系统资源和节点失败的情况下重新计算成本过高问题。
+
+```python
+conf = SparkConf().setMaster("local").setAppName("combineKey")
+sc = SparkContext(conf=conf)
+# 设置checkPoint文件保存路径
+sc.setCheckpointDir("")
+rdd1 = sc.parallelize([("A", 1), ("A", 2), ("B", 2), ("C", 3), ("B", 1)])
+rdd1.checkpoint()
+rdd1.collect()
+```
+
+## 3.7 行动操作
 
