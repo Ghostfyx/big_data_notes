@@ -63,3 +63,8 @@ namenode在内存中保存文件系统中每个文件和每个数据块的引用
 
 ### 3.2.4 HDFS高可用性
 
+通过联合使用在多个文件系统中备份namenode的元数据和备份namenode创建监测点防止数据丢失，依旧无法实现文件系统的高可用性。namenode还是存在单点失效问题（SPOF）。
+
+假设主namenode失效，系统运维人员需要启动一个拥有文件系统元数据副本的新namenode，配置datanode和客户端使用新namenode。新namenode需要：
+
+- 将m
