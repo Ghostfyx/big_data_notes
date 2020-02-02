@@ -65,6 +65,74 @@ namenode在内存中保存文件系统中每个文件和每个数据块的引用
 
 通过联合使用在多个文件系统中备份namenode的元数据和备份namenode创建监测点防止数据丢失，依旧无法实现文件系统的高可用性。namenode还是存在单点失效问题（SPOF）。
 
-假设主namenode失效，系统运维人员需要启动一个拥有文件系统元数据副本的新namenode，配置datanode和客户端使用新namenode。新namenode需要：
+假设主namenode失效，系统运维人员需要启动一个拥有文件系统元数据副本的新namenode，配置datanode和客户端使用新namenode。新namenode需要满足以下情形才能重新相应服务：
 
-- 将m
+- 将命名空间镜像导入内存汇总；
+- 重新编辑日志；
+- 收到足够多的datanode的数据块退出安全模式；
+
+对于一个大型Hadoop集群，namenode冷启动大约需要30min，系统恢复时间太长。针对上述问题Hadoop 2.X版本在HDFS中增加了对HA的支持，当主namenode失效，备用namenode就会接管它的任务，不会有明显中断。Hadoop 2.X版本架构上有以下修改：
+
+- namenode之间需要通过高可用的共享存储实现（NFS，基于Zookeeper的BookKeeper），当备用namenode接管工作后，会通读共享编辑日志直至末尾，并继续读取由活动namenode写入的新条目；
+- datanode需要同时向两个namenode发送数据块处理报告，因为数据块的映射信息存储在namenode内存中；
+- 客户端需要使用特定的机制处理namenode失效问题；
+
+在主namenode失效后，备用namenode能够快速（几十秒）实现任务接管，因为最新的状态存储在内存中：包括最新的编辑日志条目和最新的数据块映射信息。
+
+**故障切换与规避**
+
+管理主/备namenode故障切换的管理器被称为故障转移器（failover controller），故障转移器是可插拔的，最初的实现是基于Zookeeper。每一个namenode运行一个轻量级的故障转移器，通过心跳检测监督宿主namenode是否失效，并在失效时，进行故障切换。
+
+故障切换时分为平稳故障转移和非平稳故障转移两种情况。非平稳故障转移的情况下，无法确切知道知道失效namenode是否已经停止运行，例如：网速非常慢的情况下，心跳检验超时。为此HA机制做了进一步优化，确保之前活动的namenode不会执行危害系统并导致系统崩块的操作——称为“规避”(fencing)。规避机制包括：kill 之前namenode进程；收回共享存储目录权限；屏蔽网络端口等。
+
+客户端故障切换通过客户端类库实现透明处理，最简单的实现是通过客户端的配置文件实现故障切换控制。HDFS URI使用一个逻辑主机名（配置Host），逻辑主机名映射到一个namenode地址，客户端会访问每个namenode类库。
+
+## 3.3 命令行接口
+
+搭建Hadoop伪分布式环境时，有两个配置：
+
+- fs.default.name，用于设置Hadoop的默认文件系统，使用hdfs://localhost/设置HDFS为Hadoop默认文件系统，HDFS的守护程序通过该属性项来确定HDFS namenode的主机和端口，将在localhost的默认端口8020运行namenode。
+-  Dis.replications：用于设计数据块副本的数量；伪分布式下可以设置为1，默认为3。
+
+**HDFS中的文件访问权限**
+
+针对文件和目录，HDFS的权限模式和POSIX非常相似。一共提供三类权限模式：只读权限（r），写入权限（w）和可执行权限（x）。写入、删除文件或删除、新建目录需要写入权限。可执行权限可以忽略，因为不能在HDFS中执行文件。
+
+每个文件和目录都有所属用户（owner）、所属组别（group）以及模式（mode）。模式是由所属用户权限、组内成员的权限、以及其他用户权限组成。
+
+![]
+
+文件权限是否开启通过dfs.permissions.enabled属性来控制，这个属性默认为false，没有打开安全限制，因此不会对客户端做授权校验，如果开启安全限制，会对操作文件的用户做权限校验。特殊用户superuser是Namenode进程的标识，不会针对该用户做权限校验。
+
+## 3.4 Hadoop文件系统
+
+Hadoop有一个抽象的文件系统概念，HDFS只是其中的一种实现。Hadoop提供的实现如下表：
+
+| 文件系统    | URI方案 | Java实现                       | 描述                                                         |
+| ----------- | ------- | ------------------------------ | ------------------------------------------------------------ |
+| Local       | file    | fs.LocalFileSystem             | 使用了客户端校验和本地磁盘文件系统                           |
+| HDFS        | hdfs    | fdfs.DistributedFileSystem     | Hadoop的分布式文件系统                                       |
+| HFTP        | Hftp    | fdfs.hftpFileSystem            | 在Http上提供对HDFS只读访问的文件系统                         |
+| HSFTP       | hsftp   | hdfs.HsftpFileSystem           | 在HTTPS上提供对HDFS只读访问的文件系统                        |
+| webHDFS     | webhdfs | hdfs.web.WebHDFSFileSystem     | 基于HTTp，对HDFS提供安全读写访问的文件系统，为了替代HFTP和HSFTP |
+| HAR         | har     | fs.HarFileSystem               | 一个构建在其他文件系统之上用于文件存档的文件系统。Hadoop存档文件系统通常用于需要将HDFS中的文件进行存档时，以减少namenode内存的使用 |
+| hfs(云存储) | kfs     | fs.kgs.kosmosFileSystem        | CloudStore是类似于HDFS或是谷歌的GFS文件系统                  |
+| FTP         | ftp     | fs.ftp.FTPFileSystem           | 由FTP服务器支持的文件系统                                    |
+| s3(原生)    | s3n     | fs.s3native.NativeS3FileSystem | 由Amazon S3支持的文件系统                                    |
+| s3(基于块)  | s3      | fs.sa.S3FileSystem             | 由Amazon S3支持的文件系统，以块格式存储文件以解决S3的5GB文件大小限制 |
+| 分布式RAID  | hdfs    | fdfs.DistributedRaidFileSystem | RAID版本的HDFS是为了存档而设计的，针对HDFS中每个文件创建一个校验文件，HDFS文件副本数目变为2，减少25%～30%的存储空间，数据丢失的概率不变。 |
+
+Hadoop对文件系统提供了很多接口，一般使用URI方案来选取合适的文件系统实例进行交互。例：要想列出本地文件系统根目录下的文件，输入命令：　　
+
+```sh
+hadoop fs -ls file://
+```
+
+**接口**
+
+Hadoop是用JAVA开发的，所以大多数的Hadoop文件系统交互都是以JAVA API作为中间沟通的桥梁。例如文件系统shell就是一个JAVA应用程序，使用JAVA类FileSystem来操作文件。
+
+#### HTTP
+
+Hadoop系统的文件系统接口是用Java开发的，这就使用非JAVA应用很难与HDFS交互。当其它语言需要与HDFS交互时，我们可以使用WebHDFS提供的HTTP REST API接口，这将会容易许多。但是要注意的是HTTP接口会比原生的JAVA客户端慢，所以如果可以的话，应尽量避免进行大数据量传输。
+
