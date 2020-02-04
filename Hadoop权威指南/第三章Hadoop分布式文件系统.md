@@ -130,9 +130,271 @@ hadoop fs -ls file://
 
 **接口**
 
-Hadoop是用JAVA开发的，所以大多数的Hadoop文件系统交互都是以JAVA API作为中间沟通的桥梁。例如文件系统shell就是一个JAVA应用程序，使用JAVA类FileSystem来操作文件。
+Hadoop是用JAVA开发的，所以大多数的Hadoop文件系统交互都是以JAVA API作为中间沟通的桥梁。例如文件系统shell就是一个JAVA应用程序，使用JAVA类FileSystem来操作文件。其他的一些文件系统接口会在下面介绍，这些接口通常会与HDFS一同使用，因为Hadoop中其他文件系统一般都有访问基本文件系统的客户端，例如：FTP客户端，S3工具等，大多数都能用户Hadoop文件系统。
 
-#### HTTP
+#### 1.HTTP
 
-Hadoop系统的文件系统接口是用Java开发的，这就使用非JAVA应用很难与HDFS交互。当其它语言需要与HDFS交互时，我们可以使用WebHDFS提供的HTTP REST API接口，这将会容易许多。但是要注意的是HTTP接口会比原生的JAVA客户端慢，所以如果可以的话，应尽量避免进行大数据量传输。
+通过HTTP访问HDFS有两种方法：直接访问，HDFS后台进程直接服务于来自客户端的请求；通过代理（一个对多个）访问。客户端通常通常使用DisruributedFIleSystem API访问HDFS。
 
+![](./img/3-1.jpg)
+
+​								**图3-1 通过HTTP直接访问HDFS或者多个HDFS访问HDFS**
+
+在第一种情况，由namenode内嵌的web服务器（端口：50070）上提供目录服务，目录列表以XML或者JSON格式存储，文件数据由datanode的web服务器（运行在端口：50075）以数据流的形式传输。
+
+第二种方法依靠一个或多个代理服务器通过HTTP访问HDFS。由于代理服务器是无状态的，因此可以运行在标准的负载均衡服务器之后。使用代理服务器后，可以使用更严格的防火墙和带宽限制策略。通常情况下使用代理服务器，实现在不同数据中心部署的Hadoop集群之间的数据传输。
+
+从1.0.0版本实现了一个HttpFS的代理服务器（具备读和写的能力），并且提供了和WebHDFS一样的HTTP接口，因此客户端可以通过webhdfs URI发膜很微妙这两类接口。
+
+**3.FUSE**
+
+用户空间文件系统（FileSystem in Userspace，FUSE）允许把按照用户空间实现的文件系统整合成一个Unix文件系统，通过使用Hadoop的FUSE-DFS功能模块，任何HDFS文件系统可以作为一个标准的文件系统进行挂载，随后便可以使用Unix工具，如ls，cat与文件系统交互。
+
+## 3.5 Java接口
+
+本节深入研究Hadoop的FileSystem类：它是与Hadoop的某个文件系统进行交互的API。
+
+### 3.5.1 从Hadoop URI读取数据
+
+从Hadoop文件系统读取文件最简单的方法是使用java.net.URL对象打开数据流，从中读取数据。为了让Java程序能够识别到Hadoop的hdfs URL，需要通过FsUrlStreamHandlerFactory实例调用ava.net.URL对象的setURLStreamHandlerFactory方法。每个Java虚拟机只能调用一次这个方法，因此通常在**静态方法**中调用。代码示例如下：
+
+```java
+static {
+        URL.setURLStreamHandlerFactory(new FsUrlStreamHandlerFactory());
+    }
+
+    public static void main(String[] args){
+        String filePath = args[0];
+        InputStream in = null;
+        try {
+            in = new URL(filePath).openStream();
+            IOUtils.copyBytes(in,System.out, 4096, false);
+        } catch (MalformedURLException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }finally {
+            IOUtils.closeStream(in);
+        }
+    }
+```
+
+注意：java.net.URL对象的setURLStreamHandlerFactory方法。每个Java虚拟机只能调用一次这个方法。如果其他第三方组件中，使用了FsUrlStreamHandlerFactory就会失效。
+
+### 3.5.2  通过FileSystem API读取
+
+上节的读取方法限制性很强，因此推荐使用FIleSystem API来打开一个文件的输入流。
+
+Hadoop文件系统通过Hadoop Path对象来代表文件。可以将HDFS文件文件路径视为一个Hadoop文件系统URI。FileSystem是一个通用文件系统的APi，这里我们使用HDFS。获取FileSystem实例有以下几个静态方法：
+
+```java
+public static FileSystem get(Configuration conf) throws IOException
+  
+public static FileSystem get(URI uri, Configuration conf) throws IOException
+
+public static FileSystem get(URI uri, Configuration conf, String user) throws IOException  
+```
+
+Configuration 对象封装了客户端或者服务器的配置，通过配置文件读取类路径来实现（如conf/core-site.xml）。
+
+FileSystem调用open( )函数来获取文件的输入流。
+
+```java
+public static void main(String args[]){
+        Configuration conf = new Configuration();
+        String url = args[0];
+        InputStream in = null;
+        try {
+            FileSystem fs = FileSystem.get(URI.create(url),conf);
+            in = fs.open(new Path(url));
+            IOUtils.copyBytes(in, System.out, 4096, false);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }finally {
+            IOUtils.closeStream(in);
+        }
+    }
+```
+
+**FSDataInput对象**
+
+FileSystem的open方法返回的是FSDataInputStream对象，继承java.io.DataInputStream接口，并支持随机访问，由此可以从流的任意位置访问数据。
+
+```java
+public class FSDataInputStream extends DataInputStream
+    implements Seekable, PositionedReadable, 
+      ByteBufferReadable, HasFileDescriptor, CanSetDropBehind, CanSetReadahead,
+      HasEnhancedByteBufferAccess, CanUnbuffer {
+```
+
+seekable接口支持在文件中找到指定位置，并提供一个查询当前位置相对于文件起始位置偏移量（getPos）的查询方法。
+
+```java
+public interface Seekable {
+  /**
+   * Seek to the given offset from the start of the file.
+   * The next read() will be from that location.  Can't
+   * seek past the end of the file.
+   */
+  void seek(long pos) throws IOException;
+  
+  /**
+   * Return the current offset from the start of the file
+   */
+  long getPos() throws IOException;
+
+  /**
+   * Seeks a different copy of the data.  Returns true if 
+   * found a new source, false otherwise.
+   */
+  @InterfaceAudience.Private
+  boolean seekToNewSource(long targetPos) throws IOException;
+}
+```
+
+使用seek( )方法，将Hadoop文件系统中的文件读取两次：
+
+```java
+    public static void main(String args[]){
+        Configuration conf = new Configuration();
+        String url = args[0];
+        FSDataInputStream in = null;
+        try {
+            FileSystem fs = FileSystem.get(URI.create(url),conf);
+            in = fs.open(new Path(url));
+            IOUtils.copyBytes(in, System.out, 4096, false);
+            in.seek(0);
+            IOUtils.copyBytes(in, System.out, 4096, false);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }finally {
+            IOUtils.closeStream(in);
+        }
+    }
+```
+
+**Tips**
+
+seek()方法是一个相对高开销的操作，需要谨慎使用，建议使用流数据来构建应用的访问模式（如使用MapReduce），而非执行大量seek方法。
+
+### 3.5.3 写入数据
+
+FileSystem类有一系列新建文件的方法。
+
+- create方法，create方法有多个重栽版本，允许我们指定是否需要强制覆盖现有文件、文件备份数量、写入文件缓冲区大小、文件块大小以及权限。
+
+	```java
+	/**
+	   * Create an FSDataOutputStream at the indicated Path.
+	   * Files are overwritten by default.
+	   * @param f the file to create
+	   */
+	  public FSDataOutputStream create(Path f) throws IOException {
+	    return create(f, true);
+	  }
+	  
+	  /**
+	   * Create an FSDataOutputStream at the indicated Path.
+	   * @param f the file to create
+	   * @param overwrite if a file with this name already exists, then if true,
+	   *   the file will be overwritten, and if false an exception will be thrown.
+	   */
+	  public FSDataOutputStream create(Path f, boolean overwrite)
+	      throws IOException {
+	    return create(f, overwrite, 
+	                  getConf().getInt("io.file.buffer.size", 4096),
+	                  getDefaultReplication(f),
+	                  getDefaultBlockSize(f));
+	  }
+	
+	/**
+	   * Create an FSDataOutputStream at the indicated Path.
+	   * Files are overwritten by default.
+	   * @param f the file to create
+	   * @param replication the replication factor
+	   */
+	  public FSDataOutputStream create(Path f, short replication)
+	      throws IOException {
+	    return create(f, true, 
+	                  getConf().getInt("io.file.buffer.size", 4096),
+	                  replication,
+	                  getDefaultBlockSize(f));
+	  }
+	
+	public FSDataOutputStream create(Path f,
+	                                            boolean overwrite,
+	                                            int bufferSize,
+	                                            short replication,
+	                                            long blockSize,
+	                                            Progressable progress
+	                                            ) throws IOException {
+	    return this.create(f, FsPermission.getFileDefault().applyUMask(
+	        FsPermission.getUMask(getConf())), overwrite, bufferSize,
+	        replication, blockSize, progress);
+	  }
+	```
+
+	Progressable progress用于传递回调接口，可以把数据写入datanode的进度通知给应用。每次Hadoop、调用progress方法时，就是每次将64KB数据写入datanode管线后。
+
+- append方法在一个已有文件末尾追加数据。
+
+	```java
+	/**
+	   * Append to an existing file (optional operation).
+	   * @param f the existing file to be appended.
+	   * @param bufferSize the size of the buffer to be used.
+	   * @param progress for reporting progress if it is not null.
+	   * @throws IOException
+	   */
+	  public abstract FSDataOutputStream append(Path f, int bufferSize,
+	      Progressable progress) throws IOException;
+	```
+
+将本地文件复制到Hadoop文件系统实例：
+
+```java
+public static void main(String[] args) throws Exception {
+        String localdir = args[0];
+        String dst = args[1];
+        InputStream in = new BufferedInputStream(new FileInputStream(localdir));
+        Configuration configuration = new Configuration();
+        FileSystem fs = FileSystem.get(URI.create(dst), configuration);
+        OutputStream outputStream = fs.create(new Path(dst), new Progressable() {
+            @Override
+            public void progress() {
+                System.out.println(new Date());
+            }
+        });
+        IOUtils.copyBytes(in, System.out, 4096, true);
+    }
+```
+
+**FSDataOutputStream**
+
+FileSystem的create方法返回FSDataOutputStream对象，与FSDataInputStream相似，也有查询文件当前位置的方法：
+
+```java
+public long getPos() throws IOException {
+      return position;                            // return cached position
+    }
+```
+
+与FSDataInputStream不同的是，FSDataInputStream类不允许在文件中定位，因为HDFS只允许对一个已打开的文件顺序写入，或在文件末尾追加数据，即**不支持在文件任意位置写入数据**。
+
+### 3.5.4 目录
+
+FileSystem提供mkdirs方法创建目录：
+
+```java
+  /**
+   * Make the given file and all non-existent parents into
+   * directories. Has the semantics of Unix 'mkdir -p'.
+   * Existence of the directory hierarchy is not an error.
+   * @param f path to create
+   * @param permission to apply to f
+   */
+  public abstract boolean mkdirs(Path f, FsPermission permission
+      ) throws IOException;
+```
+
+通常不需要显式的创建目录，因为调用create方法写入文件时会自动创建父目录。
