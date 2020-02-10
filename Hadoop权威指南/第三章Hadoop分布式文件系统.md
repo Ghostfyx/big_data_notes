@@ -379,7 +379,7 @@ public long getPos() throws IOException {
     }
 ```
 
-与FSDataInputStream不同的是，FSDataInputStream类不允许在文件中定位，因为HDFS只允许对一个已打开的文件顺序写入，或在文件末尾追加数据，即**不支持在文件任意位置写入数据**。
+与FSDataInputStream不同的是，FSDataOutputStream类不允许在文件中定位，因为HDFS只允许对一个已打开的文件顺序写入，或在文件末尾追加数据，即**不支持在文件任意位置写入数据**。
 
 ### 3.5.4 目录
 
@@ -627,3 +627,60 @@ public class RegexExcludePathFilter implements PathFilter {
 ```
 
 如果f是一个文件或空目录，那么recursive会被忽略，只有在recursive为true，且f为非空目录时，f下的目录与文件会被递归删除。注意：recursive默认为true，为了防止文件背递归删除，最好将其赋值为false。
+
+## 3.6 数据流
+
+### 3.6.1 剖析文件读取
+
+客户端、HDFS、namenode、datanode之间数据流在文件读取时，事件发生顺序如下所示：
+
+![](./img/3-2.jpg)
+
+​													**图3-2 客户端读取HDFS数据**
+
+1. 客户端通过调用FileSystem对象的open( )方法打开文件，对于HDFS来说这个文件是DIstributedFileSystem。
+2. DistributedFileSystem对象通过RPC来调用namenode，以确定文件起始块的位置。对于每一个块，namenode返回存有该块副本的datanode地址。此外，这些datanode根据它们与客户端的距离来排序（根据集群的网络拓扑），如果客户端本身就是一个datanode（比如：在一个MapReduce任务中），并存有相应数据块的副本，该节点就会从本地datanode读取数据。
+3. DistributedFileSystem类返回一个FSDataInputStream对象（支持文件定位的输入流）给客户端并读取数据，FSDataInputStream类转而封装DFSInputStream对象，该对象管理着Datanode和namenode的IO。客户端对DistributedFileSystem调用read方法，存储着文件起始几个块的datanode地址的DFSInputStream随即连接距离最近的datanode。
+4. 通过对数据流反复调用read( )方法，可以将数据从datanode传输到客户端。到达块末端时，DFSInputStream会关闭与该datanode的连接；
+5. 寻找下一个最佳的datanode，读取数据；客户端从流中读取数据时，块是按照打开DFSInputStream与datanode新建连接的顺序读取的，它也会根据需要询问namenode来检索下一批数据块的datanode的位置。
+6. 读取完成，对FSDataInputStream调用close方法。
+
+在读取数据时，如果DFSInputStream在与datanode通信时遇到错误，会尝试从这个块的另外一个最邻近datanode读取数据，也会记住故障datanode，保证以后不会反复读取该节点上的后续块。DFInputStream也会通过校验和确认从datanode发来数据是否完成，如果发现损坏块，DFSInputStream会试图从其他datanode读取其副本之前通知namenode。
+
+这样设计的**重点是**：namenode告知客户端每个块中最佳的datanode，并让客户端直接连到该datanode检索数据，能使HDFS可扩展到大量的并发客户端，同时，namenode只需要相应块位置的请求，由于数据块信息均存储在内存中，因此相应高效。
+
+**网络拓扑与Hadoop**
+
+在海量数据处理中，其主要限制因素是节点之间数据的传输速率（带宽是稀缺资源），理想情况下，将两个节点之间的带宽作为距离的衡量标准。
+
+实际情况中，很难衡量两个节点之间的带宽，Hadoop为此采用一个简单的方法：把网络看作一棵树，两个节点之间的距离是它们到最近共同祖先的距离总和。树的层次是没有预先设定的，但是相对于数据中心、机架和正在运行的节点可以设定优先级，具体想法是针对以下每个场景，可用带宽依次递减：
+
+- 同一节点的进程；
+- 同一机架的不同节点；
+- 同一数据中心不同机架上的节点；
+- 不同数据中心的节点
+
+例如：假设数据中心为$d_1$，机架$r_1$中的节点$n_1$，该节点可以表示为：$/d_1/r_1/n_1$。数据中心为$d_1$。
+
+同一机架$r_1$中的节点$n_2$与$n_1$的距离为:
+$$
+distance(/d_1/r_1/n_1, /d_1/r_1/n_2) = 0
+$$
+同一机架的不同节点：
+$$
+distance(/d_1/r_1/n_1, /d_1/r_2/n_2) = 2
+$$
+同一数据中心不同机架的节点：
+$$
+distance(/d_1/r_1/n_1, /d_1/r_2/n_2) = 4
+$$
+不同数据中心的节点：
+$$
+distance(/d_1/r_1/n_1, /d_2/r_2/n_2) = 4
+$$
+Hadoop无法自定义网络拓扑结构，需要用户理解并自定义，会在后续9.1.1的“网络拓扑”中详细介绍定义。
+
+ ![](./img/3-3.jpg)
+
+​													**图3-3 Hadoop中的网络距离**
+
