@@ -106,4 +106,8 @@ $ spark-submit --class com.oreilly.learningsparkexamples.scala.StreamingLogInput
 $ nc localhost 7777 # 使你可以键入输入的行来发送给服务器 <此处是你的输入>
 ```
 
-接下来我们会把这个例子加以扩展以处理 Apache 日志文件。如果你需要生成一些假的日 志，可以运行本书 Git 仓库中的脚本 ./bin/fakelogs.sh 或者 ./bin/fakelogs.cmd 来把日志发给 7777 端口。
+接下来会把这个例子加以扩展以处理 Apache 日志文件。如果你需要生成一些假的日志，可以运行本书 Git 仓库中的脚本 ./bin/fakelogs.sh 或者 ./bin/fakelogs.cmd 来把日志发给 7777 端口。
+
+## 10.2 架构与抽象
+
+Spark Streaming使用微批次的架构，把流式计算当作一系列连续的小规模批处理来对待。Spark Streaming从各个输入源中读取数据，并把数据分组为小的批次。新的批次按均匀的时间jiane

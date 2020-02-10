@@ -398,3 +398,232 @@ FileSystem提供mkdirs方法创建目录：
 ```
 
 通常不需要显式的创建目录，因为调用create方法写入文件时会自动创建父目录。
+
+### 3.5.5 查询文件系统
+
+#### 1. 文件元数据：FileStatus
+
+任何一个文件系统中的重要特征都是提供其目录结构浏览和检索它所在的文件和目录相关信息的功能。FileStatus类封装了文件系统中文件和目录的元数据，包括文件长度、块大小、副本、修改时间、所有者以及权限信息。
+
+FileSystem的getFileStatus方法用于获取文件或目录的FileStatus对象，如例3-5所示：
+
+```java
+ public static void main(String[] args) throws IOException {
+        String uri = args[0];
+        Configuration configuration = new Configuration();
+        FileSystem fs = FileSystem.get(URI.create(uri), configuration);
+        FileStatus fileStatus = fs.getFileStatus(new Path(uri));
+        // 获取文件长度
+        System.out.println(fileStatus.getLen());
+        System.out.println(fileStatus.getPath());
+        // 获取复制的副本数量
+        System.out.println(fileStatus.getReplication());
+        // 最后更改时间
+        System.out.println(fileStatus.getModificationTime());
+        // BlockSize
+        System.out.println(fileStatus.getBlockSize());
+        System.out.println(fileStatus.getOwner());
+        System.out.println(fileStatus.getGroup());
+    }
+```
+
+如果文件目录均不存在，会抛出FileNotFoundException异常。
+
+#### 2. 列出文件
+
+在实际应用中，我们通常需要列出目录中的文件内容。在Hadoop使用FileSystem的lisSatus( )实现。具体方法功能如下：
+
+```java
+/**
+   * Filter files/directories in the given list of paths using default
+   * path filter.
+   * 
+   * @param files
+   *          a list of paths
+   * @return a list of statuses for the files under the given paths after
+   *         applying the filter default Path filter
+   * @throws FileNotFoundException when the path does not exist;
+   *         IOException see specific implementation
+   */
+  public FileStatus[] listStatus(Path[] files)
+      throws FileNotFoundException, IOException {
+    return listStatus(files, DEFAULT_FILTER);
+  }
+  
+  /**
+   * Filter files/directories in the given list of paths using user-supplied
+   * path filter.
+   * 
+   * @param files
+   *          a list of paths
+   * @param filter
+   *          the user-supplied path filter
+   * @return a list of statuses for the files under the given paths after
+   *         applying the filter
+   * @throws FileNotFoundException when the path does not exist;
+   *         IOException see specific implementation
+   */
+  public FileStatus[] listStatus(Path[] files, PathFilter filter)
+      throws FileNotFoundException, IOException {
+    ArrayList<FileStatus> results = new ArrayList<FileStatus>();
+    for (int i = 0; i < files.length; i++) {
+      listStatus(results, files[i], filter);
+    }
+    return results.toArray(new FileStatus[results.size()]);
+  }
+  
+  /**
+   * List the statuses of the files/directories in the given path if the path is
+   * a directory.
+   * 
+   * @param f given path
+   * @return the statuses of the files/directories in the given patch
+   * @throws FileNotFoundException when the path does not exist;
+   *         IOException see specific implementation
+   */
+  public abstract FileStatus[] listStatus(Path f) throws FileNotFoundException, 
+                                                         IOException;
+   
+   /**
+   * Filter files/directories in the given path using the user-supplied path
+   * filter.
+   * 
+   * @param f
+   *          a path name
+   * @param filter
+   *          the user-supplied path filter
+   * @return an array of FileStatus objects for the files under the given path
+   *         after applying the filter
+   * @throws FileNotFoundException when the path does not exist;
+   *         IOException see specific implementation   
+   */
+  public FileStatus[] listStatus(Path f, PathFilter filter) 
+                                   throws FileNotFoundException, IOException {
+    ArrayList<FileStatus> results = new ArrayList<FileStatus>();
+    listStatus(results, f, filter);
+    return results.toArray(new FileStatus[results.size()]);
+  }
+  
+```
+
+当入参是一个文件时，会返回长度为1的FileStatus对象数组；当入参是一个目录时，会返回0或者多个FileStatus对象，表示此目录包含的文件和目录，其执行结果相当于依次轮流传递每条路径对其调用listStatus( )方法。
+
+它的重载方法允许使用PathFilter对象来限制匹配的文件和目录。FileUtil中的stat2Paths( )方法，将FileStatus对象数组转换为Path对象数组。
+
+```java
+public static void main(String[] args) throws IOException {
+        String uri = args[0];
+        Configuration configuration = new Configuration();
+        FileSystem fs = FileSystem.get(URI.create(uri), configuration);
+        Path[] paths = new Path[args.length];
+        for (int i = 0; i < paths.length; i++) {
+            paths[i] = new Path(args[i]);
+        }
+        FileStatus[] statuses = fs.listStatus(paths);
+        Path[] pathsTransform = FileUtil.stat2Paths(statuses);
+        for (Path p : pathsTransform){
+            System.out.println(p.getName());
+        }
+    }
+```
+
+#### 3. 文件模式
+
+在单个操作中处理一批文件是一个常见需求，例如：处理日志的MapReduce作业中可能需要分析大量目录中的文件。在一个表达式中使用通配符来匹配多个文件是比较方便的，无需列举每个文件和目录作为指定输入，该操作称为**通配（globbing）**。Hadoop执行通配的方法如下：
+
+```java
+public FileStatus[] globStatus(Path pathPattern) throws IOException {
+    return new Globber(this, pathPattern, DEFAULT_FILTER).glob();
+  }
+  
+/**
+   * Return an array of FileStatus objects whose path names match pathPattern
+   * and is accepted by the user-supplied path filter. Results are sorted by
+   * their path names.
+   * Return null if pathPattern has no glob and the path does not exist.
+   * Return an empty array if pathPattern has a glob and no path matches it. 
+   * 
+   * @param pathPattern
+   *          a regular expression specifying the path pattern
+   * @param filter
+   *          a user-supplied path filter
+   * @return an array of FileStatus objects
+   * @throws IOException if any I/O error occurs when fetching file status
+   */
+  public FileStatus[] globStatus(Path pathPattern, PathFilter filter)
+      throws IOException {
+    return new Globber(this, pathPattern, filter).glob();
+  }  
+```
+
+globStatus( )的方法返回与其路径匹配于指定模式的所有文件的FIleStatus对象数组，并按路径排序。PathFilter可以进一步对匹配结果限制。
+
+Hadoop支持的通配符与Unix bash相同，如表3-2所示
+
+| 通配符  | 名称       | 匹配                                       |
+| ------- | ---------- | ------------------------------------------ |
+| *       | 星号       | 匹配0个或多个字符                          |
+| ？      |            | 匹配单一字符                               |
+| [ab]    | 字符类     | 匹配{a, b}集合中的一个字符                 |
+| [^ ab]  | 非字符类   | 匹配非{a, b}集合中的一个字符               |
+| [a-b]   | 字符范围   | 匹配一个在{a, b}范围内的字符（包括a，b）   |
+| [^ a-b] | 非字符范围 | 匹配一个不在{a, b}范围内的字符（包括a，b） |
+| {a, b}  | 或         | 匹配a或b中的一个表达式                     |
+| \c      | 转义字符   | 匹配元字符c                                |
+
+#### 4. PathFilter对象
+
+通配符模式并不总能精确地描述想要访问的文件集，FileSystem中的listStatus( )方法和globStatus( )方法提供可选择的PathFilter对象，以编程的方式控制通配符：
+
+```java
+public interface PathFilter {
+  /**
+   * Tests whether or not the specified abstract pathname should be
+   * included in a pathname list.
+   *
+   * @param  path  The abstract pathname to be tested
+   * @return  <code>true</code> if and only if <code>pathname</code>
+   *          should be included
+   */
+  boolean accept(Path path);
+}
+```
+
+PathFilter与java.io.PathFilter一样，入参是Path对象。示例如3-7所示：
+
+```java
+public class RegexExcludePathFilter implements PathFilter {
+    
+    private final String regex;
+
+    public RegexExcludePathFilter(String regex) {
+        this.regex = regex;
+    }
+
+    @Override
+    public boolean accept(Path path) {
+        return !path.toString().matches(regex);
+    }
+}
+```
+
+过滤器由Path表示，只能作用于文件名，不能针对文件的属性。
+
+### 3.5.6 删除文件
+
+使用FileSystem的delete( )方法可以永久删除文件或目录。
+
+```java
+/** Delete a file.
+   *
+   * @param f the path to delete.
+   * @param recursive if path is a directory and set to 
+   * true, the directory is deleted else throws an exception. In
+   * case of a file the recursive can be set to either true or false. 
+   * @return  true if delete is successful else false. 
+   * @throws IOException
+   */
+  public abstract boolean delete(Path f, boolean recursive) throws IOException;
+```
+
+如果f是一个文件或空目录，那么recursive会被忽略，只有在recursive为true，且f为非空目录时，f下的目录与文件会被递归删除。注意：recursive默认为true，为了防止文件背递归删除，最好将其赋值为false。
