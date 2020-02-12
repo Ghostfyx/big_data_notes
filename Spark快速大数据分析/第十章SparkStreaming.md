@@ -176,8 +176,6 @@ DStream的转化操作可以分为无状态(stateless)和有状态(stateful)两�
 
 ​								**表10-1:DStream无状态转化操作的例子(不完整列表)**
 
-
-
 | 函数名        | 目的                                                         | 用来操作DStream[T] 的用户自定义函数的 函数签名 |
 | ------------- | ------------------------------------------------------------ | ---------------------------------------------- |
 | map()         | 对 DStream 中的每个元素应用给 定函数，返回由各元素输出的元素组成的 DStream。 | f: (T) -> U                                    |
@@ -219,7 +217,84 @@ JavaPairDStream<String, Long> ipCountsDStream = ipDStream.reduceByKey(new LongSu
 
 **例 10-12:在 Scala 中连接两个 DStream**
 
+```scala
+val ipBytesDStream =
+       accessLogsDStream.map(entry => (entry.getIpAddress(), entry.getContentSize()))
+val ipBytesSumDStream = ipBytesDStream.reduceByKey((x, y) => x + y)
+val ipBytesRequestCountDStream = ipCountsDStream.join(ipBytesSumDStream)
 ```
 
+**例 10-13:在 Java 中连接两个 DStream**
+
+```java
+JavaPairDStream<String, Long> ipBytesDStream =
+       accessLogsDStream.mapToPair(new IpContentTuple());
+JavaPairDStream<String, Long> ipBytesSumDStream =
+       ipBytesDStream.reduceByKey(new LongSumReducer());
+JavaPairDStream<String, Tuple2<Long, Long>> ipBytesRequestCountDStream =
+       ipCountsDStream.join(ipBytesSumDStream);
+```
+
+还可以像在常规的Spark中一样使用DStream的union() 操作将它和另一个DStream的内容合并起来，也可以使用StreamingContext.union() 来合并多个流。
+
+Spark Streaming提供transform( )高级操作符，可以支持用户自定义直接操作其内部的RDD。这个 transform() 操作允许用户对DStream提供任意一个RDD到RDD的函数。这个函数会在数据流中的每个批次中被调用，生成一 个新的流。transform() 的一个常见应用就是重用为RDD写的批处理代码。例如，如果有extractOutliers() 函数，用来从一个日志记录的 RDD 中提取出异常值的 RDD(可能通过对消息进行一些统计)，你就可以在 transform() 中重用它，如例 10-14 和 例 10-15 所示。
+
+**例 10-14:在 Scala 中对 DStream 使用 transform()**
+
+```scala
+val outlierDStream = accessLogsDStream.transform { rdd => extractOutliers(rdd)}
+```
+
+**例 10-15:在 Java 中对 DStream 使用 transform()**
+
+```java
+JavaPairDStream<String, Long> ipRawDStream = accessLogsDStream.transform(
+		new Function<JavaRDD<ApacheAccessLog>, JavaRDD<ApacheAccessLog>>() {
+				public JavaPairRDD<ApacheAccessLog> call(JavaRDD<ApacheAccessLog> rdd) {
+						return extractOutliers(rdd);
+} });
+```
+
+也可以通过 StreamingContext.transform或DStream.transformWith(otherStream, 来整合与转化多个 DStream。
+
+### 10.3.2 有状态转化操作
+
+DStream的有状态转化操作时跨时间区跟踪数据的操作，即之前批次数据也被用来在新的批次中计算结果。主要的两种类型是滑动窗口和updateStateByKey( )，前者以一个时间阶段为滑动窗口进行操作，后者则用来跟踪每个键的状态变化。
+
+有状态转化操作需要在StreamingContext中打开检查点机制来确保容错性。会在10.6节中更详细地讨论检查点机制，现在只需要知道可以通过传递一个目录作为参数给 ssc.checkpoint() 来打开它，如例 10-16 所示。
+
+**例 10-16:设置检查点**
+
+```java
+ssc.checkpoint("hdfs://...")
+```
+
+进行本地开发时，可以使用本地路径(例如：/tmp)取代HDFS。
+
+**基于窗口的转化操作**
+
+基于窗口的转化操作会比一个StreamingContext的批次间隔更长的时间范围内，通过整合多个批次的结果，计算出整个窗口的结果。本节会展示如何使用这种转化操作来跟踪网络服 务器访问日志中的一些信息，比如常见的一些响应代码、内容大小，以及客户端类型。
+
+所有基于窗口的操作都需要两个参数：窗口时长及滑动步长，两者都必须是StreamContext的批次间隔整数倍。窗口时长控制每次计算最近的多少个批次数据，其实就是最近的windowDuration/batchInterval个批次。如果以10秒为批次间隔的源DStream，要创建最近30秒的时间窗口(即最近 3 个批次)，就应当把 windowDuration设为30 秒。而滑动步长的默认值与批次间隔相等，用来控制对新的 DStream 进行计算的间隔。如果源 DStream 批次间隔为 10 秒，并且我们只希望每两个批次计算一次窗口结果， 就应该把滑动步长设置为20秒。图 10-6 展示了一个例子。
+
+![](./img/10-6.jpg)
+
+**图 10-6:一个基于窗口的流数据，窗口时长为 3 个批次，滑动步长为 2 个批次;每隔 2 个批次就对 前 3 个批次的数据进行一次计算**
+
+对DStream可以用的最简单的窗口操作是window( )，它返回一个新的DStream来表示所请求的窗口操作的结果数据，即window( )生成的DStream中的每个RDD会包含多个批次中的数据，可以对这些数据进行count( )，transform( )等操作，见例10-17与10-18。
+
+**例 10-17:如何在 Scala 中使用 window() 对窗口进行计数**
+
+```scala
+val accessLogsWindow = accessLogsDStream.window(Seconds(30), Seconds(10))
+val windowCounts = accessLogsWindow.count()
+```
+
+**例 10-18:如何在 Java 中使用 window() 对窗口进行计数**
+
+```java
+JavaDStream<ApacheAccessLog> accessLogsWindow = accessLogsDStream.window(
+         Durations.seconds(30), Durations.seconds(10));
+JavaDStream<Integer> windowCounts = accessLogsWindow.count();
 ```
 
