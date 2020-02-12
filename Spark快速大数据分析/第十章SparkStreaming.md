@@ -298,3 +298,176 @@ JavaDStream<ApacheAccessLog> accessLogsWindow = accessLogsDStream.window(
 JavaDStream<Integer> windowCounts = accessLogsWindow.count();
 ```
 
+Spark Streaming还提供了一些其他的窗口操作。reduceByWindow() 和 reduceByKeyAndWindow() 让我们可以对每个窗口更高效地进行归约操作。它们接收一个归约函数，在整个窗口上执。此外，还有一种特殊的形式，通过只考虑新进入窗口的数据和离开窗口的数据，让Spark增量的计算归约结果，这种特殊形式需要提供归约函数的一个**逆函数**，比 如 + 对应的逆函数为 -。对于较大的窗口，提供逆函数可以大大提高执行效率(见图 10-7)。
+
+![](./img/10-7.jpg)
+
+在日志处理的例子中，可以使用这两个函数来更高效地对每个 IP 地址访问量进行计数，如例 10-19 和例 10-20 所示。
+
+**例 10-19:Scala 版本的每个 IP 地址的访问量计数**
+
+```scala
+val ipDStream = accessLogsDStream.map(logEntry => (logEntry.getIpAddress(), 1))
+val ipCountDStream = ipDStream.reduceByKeyAndWindow(
+    {(x, y) => x + y}, // 加上新进入窗口的批次中的元素
+    {(x, y) => x - y}, // 移除离开窗口的老批次中的元素
+    Seconds(30), // 窗口时长
+    Seconds(10) // 滑动步长
+)
+```
+
+**例 10-20:Java 版本的每个 IP 地址的访问量计数**
+
+```java
+class ExtractIp extends PairFunction<ApacheAccessLog, String, Long> {
+      public Tuple2<String, Long> call(ApacheAccessLog entry) {
+        return new Tuple2(entry.getIpAddress(), 1L);
+      }
+    }
+    class AddLongs extends Function2<Long, Long, Long>() {
+      public Long call(Long v1, Long v2) { return v1 + v2; }
+    }
+    class SubtractLongs extends Function2<Long, Long, Long>() {
+      public Long call(Long v1, Long v2) { return v1 - v2; }
+}
+JavaPairDStream<String, Long> ipAddressPairDStream = accessLogsDStream.mapToPair(
+      new ExtractIp());
+JavaPairDStream<String, Long> ipCountDStream = ipAddressPairDStream. reduceByKeyAndWindow(
+      new AddLongs(), // 加上新进入窗口的批次中的元素
+      new SubtractLongs() // 移除离开窗口的老批次中的元素 
+      Durations.seconds(30), // 窗口时长 
+      Durations.seconds(10)); // 滑动步长
+```
+
+**UpdateStateByKey转化操作**
+
+有时，需要在DStream中跨批次维护状态，例如：跟踪用户访问网站的会话。updateStateByKey()提供了对一个状态变量的访问，用于键值对形式的 DStream。给定一个< Key, Value>构成的DStream，并传递如何根据新的事件更新每个键对应状态的函数，最终返回一个新的DStream，其内部数据为(键，状态)。例如：在网络服务器日志中，事件可能是对网站的访问，此时键是用户的ID，使用updateStateByKey( )可以跟踪每个用户最近访问的10个页面。这个列表就是“状态”对 象，我们会在每个事件到来时更新这个状态。
+
+使用updateStateByKey( )，提供一个update(events, oldState)函数，接收与Key相关的事件以及该Key之前对应的状态，返回这个键对应的新状态。函数签名如下：
+
+- event：当前批次中接收到的事件列表（可能为空）。
+- oldState：是键之前的状态对象，存放在Option内，如果一个Key之前没有状态，这个值可以为空，
+- newState：由函数返回，也以 Option 形式存在；可以返回一个空的 Option 来表示要删除该状态。
+
+updateStateByKey( )的结果是一个新的DStream，其内部RDD序列是由每个时间区间对应的(键，状态)组成。
+
+举个简单的例子，使用 updateStateByKey() 来跟踪日志消息中各 HTTP 响应代码的计数。这里的键是响应代码，状态是代表各响应代码计数的整数，事件则是页面访问。请注意，跟之 前的窗口例子不同的是，例 10-23 和例 10-24 会进行自程序启动开始就“无限增长”的计数。
+
+**例 10-23:在 Scala 中使用 updateStateByKey() 运行响应代码的计数**
+
+```scala
+def updateRunningSum(values: Seq[Long], state: Option[Long]) = {
+       Some(state.getOrElse(0L) + values.size)
+}
+val responseCodeDStream = accessLogsDStream.map(log => (log.getResponseCode(), 1L)) 
+val responseCodeCountDStream = responseCodeDStream.updateStateByKey(updateRunningSum _)
+```
+
+**例 10-24:在 Java 中使用 updateStateByKey() 运行响应代码的计数**
+
+```java
+class UpdateRunningSum implements Function2<List<Long>,
+         Optional<Long>, Optional<Long>> {
+       public Optional<Long> call(List<Long> nums, Optional<Long> current) {
+         long sum = current.or(0L);
+         return Optional.of(sum + nums.size());
+} };
+JavaPairDStream<Integer, Long> responseCodeCountDStream = accessLogsDStream.mapToPair( new PairFunction<ApacheAccessLog, Integer, Long>() {
+           public Tuple2<Integer, Long> call(ApacheAccessLog log) {
+             return new Tuple2(log.getResponseCode(), 1L);
+         }})
+       .updateStateByKey(new UpdateRunningSum());
+```
+
+## 10.4 输出操作
+
+输出操作指定了对流数据经转化操作得到的数据所要执行的操作，例如：结果推入外部数据库或输出到屏幕。输出操作与RDD中的惰性求值类似，如果DStream及其派生出的DStream都没有被执行输出操作，则DStream就不会被求值；如果StreamingContext中没有设定输出操作，整个context就都不会启动。
+
+print( )是常用的调试性输出操作，会在每个批次中抓取DStream的前10个元素打印。Spark Streaming对DStream有与Spark类似的save( )操作，它们接收一个目录作为参数存储文件，还支持通过可选参数来设置文件的后缀名，每个批次的结果被保存在给定目录的子目录里，且文件名还有时间和后缀名，如例 10-25 所示。
+
+例 10-25:在 Scala 中将 DStream 保存为文本文件 
+
+```scala
+ipAddressRequestCount.saveAsTextFiles("outputDir", "txt")
+```
+
+还有一个更为通用的 **saveAsHadoopFiles**() 函数，接收一个 Hadoop 输出格式作为参数。例如，Spark Streaming 没有内建的 saveAsSequenceFile() 函数，但是可以使用例 10-26 和例 10-27 中的方法来保存 SequenceFile 文件。
+
+**例 10-26:在 Scala 中将 DStream 保存为 SequenceFile**
+
+```scala
+val writableIpAddressRequestCount = ipAddressRequestCount.map {
+       (ip, count) => (new Text(ip), new LongWritable(count)) }
+writableIpAddressRequestCount.saveAsHadoopFiles[
+       SequenceFileOutputFormat[Text, LongWritable]]("outputDir", "txt")
+```
+
+**例 10-27:在 Java 中将 DStream 保存为 SequenceFile**
+
+```java
+JavaPairDStream<Text, LongWritable> writableDStream = ipDStream.mapToPair(
+       new PairFunction<Tuple2<String, Long>, Text, LongWritable>() {
+         public Tuple2<Text, LongWritable> call(Tuple2<String, Long> e) {
+           return new Tuple2(new Text(e._1()), new LongWritable(e._2()));
+       }});
+class OutFormat extends SequenceFileOutputFormat<Text, LongWritable> {};
+     writableDStream.saveAsHadoopFiles(
+       "outputDir", "txt", Text.class, LongWritable.class, OutFormat.class);
+```
+
+最后，还有一个通用的输出操作foreachRDD( )，它用来对DStream中的RDD运行任意计算，这和transform有些类似，都可以让我们访问任意RDD，在 foreachRDD() 中，可以重用在Spark中实现的所有行动操作。比如，常见的用例之一是把数据写到诸如 MySQL 的外部数据库中。对于这种操作，Spark 没有提供对应的 saveAs() 函数，但可以使 用 RDD 的 eachPartition() 方法来把它写出去。为了方便，foreachRDD() 也可以提供给当前批次的时间，允许把不同时间的输出结果存到不同的位置。参见例 10-28。
+
+**例 10-28:在 Scala 中使用 foreachRDD() 将数据存储到外部系统中**
+
+```scala
+ipAddressRequestCount.foreachRDD { rdd =>
+  	rdd.foreachPartition { partition =>
+// 打开到存储系统的连接(比如一个数据库的连接) 
+      partition.foreach { item =>
+// 使用连接把item存到系统中 
+      }
+// 关闭连接 
+    }
+}
+```
+
+## 10.5 输入源
+
+Spark Streaming原生支持一些不同的数据源。一些“核心”数据源已经被打包到 Spark Streaming 的 Maven 工件中，而其他的一些则可以通过 spark-streaming-kafka 等附加工件 获取。
+
+假如在设计一个新的应用，建议从使用HDFS和Kafka这种简单的输入源开始。
+
+### 10.5.1 核心数据源
+
+所有从核心数据源创建DStream的方法都位于StreamingContext中，前面小节已经使用过一个：**套接字**(ssc.socketTextStream("localhost", 7777))，下面讨论文件和Akka actor。
+
+**1.文件流**
+
+因为Spark支持从任意Hadoop兼容的文件系统中读取数据，所以Spark Streaming也支持从任意Hadoop兼容的文件系统目录中的文件创建数据流。由于支持多种后端，这种方 式广为使用，尤其是对于像日志这样始终要复制到 HDFS 上的数据。尤其是对于像日志这样始终要复制到HDFS上的数据，要让Spark Streaming来处理数据，需要为目录名字提供**统一的日期格式**，文件也必须**原子化创建**。所谓原子化创建指的是：文件创建与数据写入操作一次完成，如果Spark Streaming要处理文件时，更多数据出现了，Spark Streaming会无法注意到新增加的数据，因此原子化操作对Spark Streaming读取文件流数据非常重要。可以修改例 10-4 和例 10-5 来处理新出现在一个目录下的日 志文件，如例 10-29 和例 10-30 所示。
+
+**例 10-29:用 Scala 读取目录中的文本文件流**
+
+```scala
+val logData = ssc.textFileStream(logDirectory)
+```
+
+**例 10-30:用 Java 读取目录中的文本文件流**
+
+```java
+ JavaDStream<String> logData = jssc.textFileStream(logsDirectory);
+```
+
+除了文本数据，也可以读入任意Hadoop输入格式，与5.2.6节所讲一样，只需要将Key、Value以及InputFormat类提供给Spark Streaming即可。例如，如果先前已经有了一 个流处理作业来处理日志，并已经将得到的每个时间区间内传输的数据分别存储成了一个 SequenceFile，就可以如例 10-31 中所示的那样来读取数据。
+
+**例 10-31:用 Scala 读取目录中的 SequenceFile 流**
+
+```scala
+ssc.fileStream[LongWritable, IntWritable,
+         SequenceFileInputFormat[LongWritable, IntWritable]](inputDirectory).map {
+         case (x, y) => (x.get(), y.get())
+}
+```
+
+**2.Akka actor流**
+
+另一个核心数据源接收器是 actorStream，它可以把 Akka actor(http://akka.io/)作为数据 流的源。要创建出一个 actor 流，需要创建一个 Akka actor，然后实现 org.apache.spark. streaming.receiver.ActorHelper 接口。要把输入数据从 actor 复制到 Spark Streaming 中， 需要在收到新数据时调用 actor 的 store() 函数。Akka actor 流不是很常见，所以不会在此对其进行深入探究。
