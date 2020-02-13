@@ -471,3 +471,233 @@ ssc.fileStream[LongWritable, IntWritable,
 **2.Akka actor流**
 
 另一个核心数据源接收器是 actorStream，它可以把 Akka actor(http://akka.io/)作为数据 流的源。要创建出一个 actor 流，需要创建一个 Akka actor，然后实现 org.apache.spark. streaming.receiver.ActorHelper 接口。要把输入数据从 actor 复制到 Spark Streaming 中， 需要在收到新数据时调用 actor 的 store() 函数。Akka actor 流不是很常见，所以不会在此对其进行深入探究。
+
+### 10.5.2 附加数据源
+
+除核心数据源外，还可以使用附加数据源从一些知名数据获取系统中接收数据，这些接收器都作为 Spark Streaming 的组件进行独立打包了，仍然是 Spark 的一部分，不过需要在构建文件中添加额外的包才能使用它们。现有的接收器包括 Twitter、Apache Kafka、Amazon Kinesis、Apache Flume，以及 ZeroMQ。可以通过添加与 Spark 版本匹配的Maven工件 spark-streaming-[projectname]_2.10 来引入这些附加接收器。
+
+**1. Apache Kafka**
+
+Apache Kafka因其速度和弹性成为一个流行的输入源。使用kafka原生支持，可以轻松处理许多主题的消息，在工程中需要引入Maven工件spark- streaming-kafka_2.10来使用它。包内提供KafkaUtils对象可以在StreamingContext和JavaStreamingContext中以Kafka消息创建出DStream。由于KafkaUtils可以订阅多个主题，因此它创建出的DStream由成对的主题和消息组成。要创建出一个数据流，需要使用**StreamingContext实例、一个逗号隔开的ZooKeeper主机列表字符串、消费者组的名字（唯一名字），以及一个从主题到针对这个主题的接收器的映射表来调用createStream方法**。如例10-32和例10-33所示：
+
+**例 10-32:在 Scala 中用 Apache Kafka 订阅 Panda 主题**
+
+```scala
+import org.apache.spark.streaming.kafka._
+...
+// 创建一个从主题到接收器线程数的映射表
+val topics = List(("pandas", 1), ("logs", 1)).toMap
+val topicLines = KafkaUtils.createStream(ssc, zkQuorum, group, topics)
+StreamingLogInput.processLines(topicLines.map(_._2))
+```
+
+**例 10-33:在 Java 中用 Apache Kafka 订阅 Panda 主题**
+
+```java
+import org.apache.spark.streaming.kafka.*;
+...
+// 创建一个从主题到接收器线程数的映射表
+Map<String, Integer> topics = new HashMap<String, Integer>(); 
+topics.put("pandas", 1);
+topics.put("logs", 1);
+JavaPairDStream<String, String> input =
+       KafkaUtils.createStream(jssc, zkQuorum, group, topics);
+input.print();
+```
+
+**2. Apache Flume**
+
+Spark提供两种不同的接收器：推式接收器和拉链接收器来使用Apache Flume，见图10-8。
+
+![](./img/10-8.jpg)
+
+​																	**图 10-8:Flume 接收器选项**
+
+- 推式接收器
+
+	推式接收器以Avro数据池的方式工作，由Flume向其中推数据。
+
+- 拉式接收器
+
+	该接收器可以从自定义的中间数据池中拉数据，而其他进程可以使用Flume把数据推进该中间数据池。
+
+两种方式都需要重新配置Flume，并在某个节点配置的端口上运行接收器（不是已有的Spark或者Flume使用的端口）。要使用其中任何一种方法，都需要在工程中引入 Maven 工件 spark-streaming-flume_2.10。
+
+**3. 推式接收数据**
+
+推式接收器的方法设置起来很容易，但是它不使用事务来接收数据。在这种方式中，接收数据已Avro数据池的方式工作，需要配置Flume来把数据发到Avro数据池（例10-34）。提供FlumeUtils对象会把接收器配置在一个特定工作节点的主机名和端口号上（例10-35与10-36）。这些设置必须和 Flume 配置相匹配。
+
+**例 10-34:Flume 对 Avro 池的配置**
+
+```xml
+a1.sinks = avroSink
+a1.sinks.avroSink.type = avro
+a1.sinks.avroSink.channel = memoryChannel
+a1.sinks.avroSink.hostname = receiver-hostname
+a1.sinks.avroSink.port = port-used-for-avro-sink-not-spark-port
+```
+
+**例 10-35:Scala 中的 FlumeUtils 代理**
+
+```scala
+ val events = FlumeUtils.createStream(ssc, receiverHostname, receiverPort)
+```
+
+**例 10-36:Java 中的 FlumeUtils 代理**
+
+```java
+JavaDStream<SparkFlumeEvent> events = FlumeUtils.createStream(ssc, 										   		 																						receiverHostname,receiverPort)
+```
+
+这种方式没有事务支持，这会增加运行接收器的工作节点发送错误时丢失数据的概率。不仅如此，如果运行接收器的工作节点发生故障，系统会尝试从 另一个位置启动接收器，这时需要重新配置 Flume 才能将数据发给新的工作节点。这样配 置会比较麻烦。
+
+**4. 拉式接收器**
+
+较新的方式是拉式接收器（在Spark1.1中引入），它设置了一个专用的Flume数据池供Spark Streaming读取，并让接收器主动从数据池中拉取数据，这种方式的优点在于弹性较好，Spark Streaming通过事务从数据池中读取并复制数据，收到事务完成的通知前，这些数据还保留在数据池中。
+
+我们需要先把自定义数据池配置为Flume第三方插件，安装插件的最新方法请参考 Flume 文档的相关部分(https://flume.apache.org/FlumeUserGuide.html#installing-third-party- plugins)。由于插件是用 Scala 写的，因此需要把插件本身以及 Scala 库都添加到 Flume 插件中。Spark 1.1 中对应的 Maven 索引如例 10-37 所示。
+
+**例 10-37:Flume 数据池的 Maven 索引**
+
+```xml
+     groupId = org.apache.spark
+     artifactId = spark-streaming-flume-sink_2.10
+     version = 1.2.0
+
+     groupId = org.scala-lang
+     artifactId = scala-library
+     version = 2.10.4
+```
+
+当把自定义Flume数据池添加到一个节点之上后，就需要配置Flume来把数据推送到这个数据池中，如例10-38所示：
+
+**例 10-38:Flume 对自定义数据池的配置**
+
+```xml
+a1.sinks = spark
+a1.sinks.spark.type = org.apache.spark.streaming.flume.sink.SparkSink
+a1.sinks.spark.hostname = receiver-hostname
+a1.sinks.spark.port = port-used-for-sync-not-spark-port
+a1.sinks.spark.channel = memoryChannel
+```
+
+等到数据已经在数据池缓存起来，就可以使用FlumeUtils来读取数据了，如例10-39和10-40所示：
+
+例 10-39:在 Scala 中使用 FlumeUtils 读取自定义数据池
+
+```scala
+ val events = FlumeUtils.createPollingStream(ssc, receiverHostname, receiverPort)
+```
+
+例 10-40:在 Java 中使用 FlumeUtils 读取自定义数据池 
+
+```java
+JavaDStream<SparkFlumeEvent> events = FlumeUtils.createPollingStream(ssc,
+       receiverHostname, receiverPort)
+```
+
+DStream是由SparkFlumeEvent组成的，可以通过event方法访问下层的AvroFlumeEvent。
+
+### 10.5.3 多数据源与集群规模
+
+可以使用类似union( )这样的操作将多个DStream合并，通过这些操作符，可以把多个输入的DStream合并起来。这样的做法有两个好处：1. 使用多个接收器对于提高聚合操作的数据获取的吞吐量非常必要，如果只有一个接收器，会成为系统的瓶颈；2. 现实场景下，有时需要使用不同的接收器从不同的数据源接收各种数据，然后join或者cogroup进行整合。
+
+每个接收器都以 Spark 执行器程序中一个长期运行的任务的形式运行，因此会占据分配给应用的CPU核心。此外，还需要有可用的CPU核心来处理数据。如果要运行多个接收器，则集群CPU核心数必须大于结束器个数。
+
+## 10.6 24/7不间断运行
+
+Spark Streaming的一大优势在于它提供了强大的容错性保障。只要输入数据存储在可靠的系统中，Spark Streaming就可以根据输入计算出正确的结果，提供“精确一次”执行的语义(就好像所有的数据都是在没有任何节点失败的情况下处理的一样)，即使是工作节点或者驱动器程序发生了失败。
+
+要不间断运行Spark Streaming应用，需要一些特别的配置：
+
+1. 是设置好诸如HDFS或Amazon S3等可靠存储系统中的**检查点机制** ；
+2. 考虑驱动器程序的容错性以及对不可靠输入源的处理。
+
+### 10.6.1 检查点机制
+
+检查点机制是Spark Streaming中用来保障容错性的主要机制，它可以使Spark Streaming阶段性的把数据存储在HDFS或者Amazon S3这样的可靠存储系统中，以供恢复使用。具体来说，检查点机制主要为以下两个目的：
+
+- 控制发生失败时需要重算的状态数，由于Spark Streaming可以通过转化图的谱系图来重算状态，检查点机制可以控制需要在转化图中回溯多远。
+- 提供驱动器容错。如果Spark Streaming的驱动器程序崩溃了，可以重启驱动器程序并让驱动器程序从检查点恢复，这样Spark Streaming就可以读取之前运行的程序处理数据的进度，并从那里继续。
+
+出于这些原因，检查点机制对于任何生产环境中的流计算应用都至关重要。你可以通过向 ssc.checkpoint() 方法传递一个路径参数(HDFS、S3 或者本地路径均可)来配置检查点 机制，如例 10-42 所示。
+
+例 10-42:配置检查点
+
+```
+ ssc.checkpoint("hdfs://...")
+```
+
+注意：即使在本地模式下，如果一个有状态操作而没有打开检查点机制，Spark Streaming也会给出提示。
+
+### 10.6.2 驱动器容错
+
+驱动器程序的容错需要使用特殊的方式创建StreamingContext，与之前使用的new StreamingContext不同，应该使用StreamingContext.getOrCreate( )函数，并把检查点目录传给StreamingContext。如例 10-43 和例 10-44 所示。
+
+**例 10-43:用 Scala 配置一个可以从错误中恢复的驱动器程序**
+
+```scala
+def createStreamingContext() = {
+       ...
+		val sc = new SparkContext(conf)
+		// 以1秒作为批次大小创建StreamingContext
+		val ssc = new StreamingContext(sc, Seconds(1)) ssc.checkpoint(checkpointDir)
+}
+...
+val ssc = StreamingContext.getOrCreate(checkpointDir, createStreamingContext _)
+```
+
+**例 10-44:用 Java 配置一个可以从错误中恢复的驱动器程序**
+
+```java
+JavaStreamingContextFactory fact = new JavaStreamingContextFactory() {
+       public JavaStreamingContext call() {
+					...
+					JavaSparkContext sc = new JavaSparkContext(conf);
+          // 以1秒作为批次大小创建StreamingContext
+          JavaStreamingContext jssc = new JavaStreamingContext(sc, Durations.seconds(1)); 
+         	jssc.checkpoint(checkpointDir);
+          return jssc;
+       }};
+JavaStreamingContext jssc = JavaStreamingContext.getOrCreate(checkpointDir, fact);
+```
+
+当上面代码第一次运行时，假设检查点目录还不存在，那么StreamingContext会调用工厂函数(在 Scala 中为 createStreamingContext()，在 Java 中为 JavaStreamingContextFactory()) 时把目录创建出来。在驱动程序失败后，如果重启驱动程序并再次执行代码，getOrCreate方法会重新冲检查点目录中初始化出StreamingContext，然后继续处理。
+
+除了用 getOrCreate() 来实现初始化代码以外，还需要编写在驱动器程序崩溃时重启驱动器进程的代码。在大多数集群管理器中，Spark 不会在驱动器程序崩溃时自动重启驱动 器进程，所以需要使用诸如**monit**这样的工具来监视驱动器进程并进行重启。最佳的实现方式往往取决于具体环境。Spark 在独立集群管理器中提供了更丰富的支持，可以在提交驱动器程序时使用 --supervise 标记来让 Spark 重启失败的驱动器程序。还要传递 --deploy-mode cluster 参数来确保驱动器程序在集群中运行，而不是在本地机器上运Spark Streaming ，如例 10-45 所示。
+ **例 10-45:使用监管模式启动驱动器程序**
+
+```
+./bin/spark-submit --deploy-mode cluster --supervise --master spark://... App.jar
+```
+
+在使用这个选项时，如果希望Spark独立模式集群的主节点也是容错的，就可以通过 ZooKeeper 来配置主节点的容错性，
+
+### 10.6.3 工作节点容错
+
+为了应对工作节点失败的问题，Spark Streaming使用与Spark容错机制相同的房吧，所有从外部数据源收到的数据都在多个工作节点上备份。所有从备份数据转化操作的过程 中创建出来的 RDD 都能容忍一个工作节点的失败，因为根据 RDD 谱系图，系统可以把丢失的数据从幸存的输入数据备份中重算出来。
+
+### 10.6.4 接收器容错
+
+运行接收器的工作节点上容错也是很重要的，如果接收器节点发生错误，Spark Streaming会在集群其他节点上重启失败的接收器。这种情况下会不会导致数据丢失取决于数据源行为（数据源是否会重发数据）以及接收器的实现（接收器是否会向数据源确认收到的数据）。以Flume为例：两种接收器的主要区别在于数据丢失时的保障。
+
+- 拉式接收器：接收器从数据源拉取数据，Spark只会在数据已经在集群中备份时，才会从数据池中移除数据；
+- 推式接收器：如果接收器在数据 备份之前失败，一些数据可能就会丢失。
+
+总的来说，对于任意一个接收器，必须同时考虑上游数据源的容错性(是否支持事务)来确保零数据丢失。
+
+接收器提供以下保证，确保数据无丢失：
+
+- 从可靠数据源读取的数据(比如通过 StreamingContext.hadoopFiles 读取的)，其底层文件系统会有备份，Spark Streaming会记住哪些数据存放到了检查点中，并在应用崩溃后从检查点处继续执行。
+- 对于像 Kafka、推式 Flume、Twitter 这样的不可靠数据源，Spark会把输入的数据复制到其他节点上，但是如果接收器任务崩溃，Spark还是会丢失数据。在Spark1.2中，收到的数据被记录到诸如HDFS这样的可靠的文件系统中，这样即使驱动器程序重启也不会导致数据丢失。
+
+综上所述，确保所有数据都被处理的最佳方式是使用可靠的数据源（例如：HDFS，拉式Flume等）。如果还需要在批处理作业中处理这些数据，使用可靠数据源是最佳方式，因为这种方式确保了批处理作业和流计算作业能读取到相同的数据，因而可以得到相同的 结果。
+
+### 10.6.5 处理保证
+
+由于 Spark Streaming 工作节点的容错保障，Spark Streaming 可以为所有的转化操作提供 “精确一次”执行的语义，即使一个工作节点在处理部分数据时发生失败，最终的转化结果(即转化操作得到的 RDD)仍然与数据只被处理一次得到的结果一样。
+
+然而，当把转化操作得到的结果使用输出操作推入外部系统时，写入结果的任务可能因为故障而执行多次，一些数据可能被写入多次，由于引入了外部系统，因此需要针对个系统的代码来处理多次写入情况。
+
+- 使用事务操作来写入外部系统，即原子化的将一个RDD分区一次写入，例如Spark Streaming的saveAs...File会在一个文件写完时自动将其原子化地移动到最终位置上，以此确保每个输出文件只存在一份。
+- 设计幂等的更新操作，即多次运行同一更新操作仍生成相同的结果。
