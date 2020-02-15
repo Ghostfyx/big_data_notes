@@ -224,7 +224,7 @@ dev队列进一步划分为eng和science两个容量相等的队列，dev队列�
 
 通过配置文件可以对每个队列进行配置，这样可以对容量调度器支持的层次结构进行配置。如例4-2所示：
 
-例4-2 公平调度器分配文件
+**例4-2 公平调度器分配文件**
 
 ```xml
 <?xml version="1.0"?>
@@ -243,6 +243,7 @@ dev队列进一步划分为eng和science两个容量相等的队列，dev队列�
 		<queue name="science"/>
 	</queue>
 
+  <!-- 设置应用放置队列规则 -->
 	<queuePlacementPolicy>
 		<rule name="specified" created="false"/>
 		<rule name="priamryGroup" created="false"/>
@@ -251,4 +252,88 @@ dev队列进一步划分为eng和science两个容量相等的队列，dev队列�
 </allocations>
 ```
 
-队列的层次使用嵌套queue元素定义，这里所有队列都是root队列的孩子。队列中的有权重元素，用于公平共享计算。本例中集群资源按照40:60分配给pro和dev队列。如果省略，默认使用公平调度。
+从xml第一个节点开始分析配置文件：
+
+- 第一个节点defaultQueueSchedulingPolicy：每个队列可以有不同的调度策略，队列的默认调度策略通过defaultQueueSchedulingPolicy配置，如果省略，默认视频公平调度。
+- 第二个节点：公平调度器支持队列级别的FIFO调度策略，以及Dominant Resource Fairness(drf)策略，使用schedulingPolicy元素指定的策略覆盖。由于希望每个生产作业能够顺序运行并且在最短时间内结束，所以prod队列指定FIFO调度策略。
+- 第三个节点：队列的层次使用嵌套queue元素定义，这里所有队列都是root队列的孩子。队列中的有权重元素，用于公平共享计算。本例中集群资源按照40:60分配给pro和dev队列。如果省略，默认使用公平调度，eng与science队列没有指定权重，会平均分配prod队列资源。注意：权重之和不一定必须是100，只需指定比例即可，dev和prod的权重分别指定2和3，效果是一样的。
+
+**注意：**设定weight时，需要把default队列和动态生成的队列也考虑进去，他们的权重分别为1，尽管不会在配置文件中显示地配置他们。
+
+还可以配置**最小和最大资源，最大应用数目**等。但是注意到，最小资源并不是硬性规定，实际上是用来优先获得资源分配的。例如两个队列都没有达到它们的需求，则当前更低于它的最小需求的队列会被优先分配资源。此外我们还可以用queuePlacementPolicy来指定每个application被分配到哪个队列。
+
+**3. 队列放置**
+
+公平调度器使用一个基于规则的系统来确定应用应该放置到哪个队列，在例4-2中，queuePlacementPolicy元素包含一个规则列表，每条规则会依次尝试直到匹配成功：
+
+- 第一条规则spcified：表示把应用放进指定队列中，如果没有指定或队列不存在，则不匹配。
+- 第二条规则priamaryGroup：表示resource manager会尝试把应用放在以用户的主Unix组名命名的队列中，create=false表示如果没有该队列，则不创建队列，继续尝试下一条规则匹配。
+- 第三条规则default：是一条兜底规则，当前规则都不匹配时，将启用该条规则，将应用放到dev.eng队列。
+
+如果完全省略queuePlacementPolicy元素，此时队列默认遵从如下配置：
+
+```xml
+<queuePlacementPolicy>
+		<rule name="specified"/>
+		<rule name="user"/>
+</queuePlacementPolicy>
+```
+
+**不使用公平队列配置文件时**，通过将属性yarn.scheduler.fair.user-as-default-queue=false将所有应用放进同一个default队列中，在应用间公平共享资源，而不是在用户之间实现共享。 等价于：
+
+```xml
+<queuePlacementPolicy>
+		<rule name="default"/>
+</queuePlacementPolicy>
+```
+
+**PS：**将属性yarn.scheduler.fari.allow-undeclared-pools=false禁止用户创建队列。
+
+**4. 抢占**
+
+在一个繁忙的集群中，当作业被提交给一个空队列，作业不会立刻启动，直到集群上已经运行的作业释放了资源。为了时作业提交到执行所需的时间可预测，公平调度器支持**抢占(preemption)**功能。
+
+抢占指的是允许调度器终止占用资源超过了其公平共享份额的队列的容器，这些容器资源释放后可以分配给资源数量低于应用份额的队列。**抢占会降低整个集群效率**，因为被终止容器需要重新执行。
+
+将yarn.scheduler.fair.preemption设置为ture即可让调度器支持优先级抢占，但还需要设置两个超时设置：一个是有关最小共享(minimum share preemption timeout)，另一个是公平共享(fair share preemption timeout)，单位都是秒。默认两个是没有设定，为了允许抢占容器，需要自己手动设定其中至少一个。
+
+如果一个队列在minimum share preemption timeout指定的时间内未获得被承诺的最小共享资源，则调度器会抢占其他队列的容器资源。可以通过配置文件顶层defaultMinSharePreemptionTimeout为所有队列设置默认的超时时间，也可以通过设置每个队列的minSharePreemptionTimeout元素来为每个队列来设置超时时间。
+
+类似地，如果一个队列在fair share preemption timeout指定时间内未获得的资源低于其公平共享份额的一半，调度器也会让它抢占其他队列容器资源。可以通过配置文件顶层defaultFairSharePreemptionThreshold为所有队列设置默认的超时时间，也可以通过设置每个队列的fairSharePreemptionThres元素来为每个队列来设置超时时间。defaultFairSharePreemptionThreshold和fairSharePreemptionThres(每个队列)可以用于设置超时阈值，默认值是0.5。
+
+### 4.3.4 延迟调度
+
+所有的YARN调度器都试图以本地请求为重，即本地节点>本机架其他节点>集群其他机架节点。带一个繁忙的集群上，如果一个应用请求某个节点，极有可能此时有其他容器正在该节点运行，只好退而求次找同一个机架上的其他节点。但是在实际中，人们发现如果能等待较短时间(秒级别)，则有很大的机会在所请求的节点上获得容器，从而可以提高集群效率，这个特性称为**延迟调度(delay scheduling)**。容量调度器与公平调度器都支持延迟调度。
+
+YARN中的每个node manager周期性的(默认每秒一次)向resource manager发送心跳请求，心跳中携带了node manager正在运行的容器、新容器可用的资源等信息，这样对于计划运行一个容器的应用而言，每个心跳就是潜在的调度机会(scheduling opportunity)。
+
+当使用延迟时，调度器不会简单的使用它收到的第一个调度机会，而是等待设定的最大数目的调度机会发生，然后才放松本地性限制接收下一个调度机会。
+
+对于容量调度器，通过设置yarn.scheduler.capacity.node-locality-delay来配置延迟调度，设置为正整数。表示调度器在放松节点限制，改为匹配同一机架上其他节点前，准备错过的调度机会数量。
+
+对于公平调度器使用集群规模比例表示延迟时间，设定小数给yarn.scheduler.fair.locality.threshold.node，例如：将yarn.scheduler.fair.locality.threshold.node设置为0.5，表示调度器在接受同一机架的其他借钱之前，将一直等待到集群中一半节点给过调度机会。还可以设定yarn.scheduler.fair.locality.threshold.rack表示接受另外一个机架替代所申请的机架之前等待的时长阈值。
+
+### 4.3.5 主导资源公平性
+
+对于单一类型资源，如内存的调度、容量公平性的概念很容易确定。当有多种资源类型需要调度时，就会变得复杂，如：一个应用CPU需求量很大，但内存需求少；另一个应用CPU需求少，内存需求大。那么如何比较两个应用？
+
+YARN调度器解决这个问题的思路是，观察每个用户的主导资源，并将其作为对集群资源使用的一个度量，这个方法称为**主导资源公平性(Dominant Resource Fairness, DRF)**。
+
+例如：假设集群有10TB内存和100核CPU，而应用A需要(2核CPU, 300GB内存)，应用B需要(6核CPU, 100GB内存)。则两种应用分别需要系统(2%, 3%)和(6%, 1%)的资源，这就意味着内存是A主导的资源, CPU是B主导的资源，并且它俩的比例是3% : 6% = 1:2。在公平调度下，B分到2/3的容器数。
+
+默认情况下不使用DRF，因此在资源计算期间，只需要考虑内存，不必考虑CPU。容量调度器和公平调度器都支持开启DRF调度：
+
+- 容量调度器：capacity-scheduler.xml文件中的设置。
+
+	```xml
+	<property>
+	    <name>yarn.scheduler.capacity.resource-calculator</name>
+	    <value>org.apache.hadoop.yarn.util.resource.DoaminResouceCalculator</value>
+	</property>
+	```
+
+- 公平调度器：将分配文件中的底层元素defaultQueueSchedulingPolicy设置为drf即可。
+
+## 4.4 延伸阅读
+
+可以通过阅读Apache Hadoop YARN一书了解更多细节。
