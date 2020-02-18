@@ -106,3 +106,234 @@ codec是压缩-解压缩算法的一种实现。在Hadoop中，一个对Compress
 
 **注意**：LZO代码库拥有GPL许可，因而可能没有包含在Apache的发行版本中，因此，Hadoop的codec需要单独从Google(http://code.google.com/p/hadoop-gpl-compression)或GitHub(http://github.com/kevinweil/hadoop-lzo)下载。LzopCodec与lzop工具兼容，LzopCodec基本上是LZO格式的但包含额外的文件头，也有针对纯LZO格式的LzoCodec，并使用*.lzo_deflate*作为文件扩展名(类似于DEFLATE，是gzip格式但不包含文件头)。
 
+**1. 通过CompressionCodec对数据流进行压缩和解压缩**
+
+CompressionCodec包含两个函数：
+
+- createOutptStream(OutputStream out)：对写入输入的数据流压缩，在底层的数据流中对需要以压缩格式写入在此之前尚未压缩压缩的数据新建一个CompressionOutputStream对象。
+- createInputStream(InputStream in)：对输入数据流中读取的数据进行解压缩时，调用该方法获取CompressionInputStream对象，从底层数据流读取解压缩后的数据。
+
+CompressionOutputStream和CompressionInputStream，类似于java.util. zip.DeflaterOutputStream和java.util.zip.DeflaterInputStream，只不过前两者能够重置其底层的压缩或解压缩方法，对于某些将部分数据流(section of data stream)压缩为单独数据块(block)的应用。
+
+**范例5-1. 该程序压缩从标准输入读取的数据，然后将其写到标准输出**
+
+``` java
+public class StreamCompressor {
+  
+  public static void main(String[] args) throws Exception {
+    String codecClassname = args[0];
+    Class<?> codecClass = Class.forName(codecClassname);
+    Configuration conf = new Configuration();
+    CompressionCodec codec = (CompressionCodec);
+    // 使用ReflectionUtils新建一个codec实例，并由此获得在System.out上支持压缩的一个包裹方法。
+    ReflectionUtils.newInstance(codecClass, conf);
+    CompressionOutputStream out = codec.createOutputStream(System.out);
+    // 对IOUtils对象调用copyBytes()方法将输入数据复制到输出，输出由CompressionOutputStream对象压缩
+    IOUtils.copyBytes(System.in, out, 4096, false);
+    //CompressionOutputStream对象调用finish()方法，要求压缩方法完成到压缩数据流的写操作，但不关闭数据流
+    out.finish();
+  }
+  
+}
+```
+
+通过GzipCodec的StreamCompressor对象对字符串“Text”进行压缩，然后使用*gunzip*从标准输入中对它进行读取并解压缩操作：
+
+```
+hadoop StreamCompressor org.apache.hadoop.io.compress.GzipCodec \
+gunzip Text
+```
+
+**2.  通过CompressionCodeFactory 推断CompressionCodec**
+
+在读取一个压缩文件时，通常可以通过文件扩展名推断需要使用哪个codec。如果文件以*.gz*结尾，则可以用GzipCodec来读取，如此等等。前面的表5-1为每一种压缩格式列举了文件扩展名。
+
+通过使用CompressionFactory的getCodec()方法，可以将文件扩展名映射到一个CompressionCodec的方法，该方法取文件的Path对象作为参数。
+
+**范例5-2. 该应用根据文件扩展名选取codec解压缩文件**
+
+```java
+public class FileDecompressor {
+  
+  public static void main(String[] args) throws Exception {
+    String uri = args[0];
+    Configuration conf = new Configuration();
+    FileSystem fs = FileSystem.get(URI.create(uri), conf);
+    Path inputPath = new Path(uri);
+    CompressionCodecFactory factory = new CompressionCodecFactory(conf);
+    CompressionCodec codec = factory.getCodec(inputPath);
+    if (codec == null) {
+      System.err.println("No codec found for " + uri);
+      System.exit(1);
+    }
+    // 去除文件扩展名形成输出文件名
+    String outputUri =
+				CompressionCodecFactory.removeSuffix(uri, codec.getDefaultExtension());
+    InputStream in = null;
+    OutputStream out = null;
+    try {
+      in = codec.createInputStream(fs.open(inputPath));
+      out = fs.create(new Path(outputUri));
+      IOUtils.copyBytes(in, out, conf);
+    } finally {
+      IOUtils.closeStream(in);
+      IOUtils.closeStream(out);
+    }
+  }
+  
+}
+```
+
+按照这种方法，一个名为*file.gz*的文件可以通过调用该程序解压为名为*file*的文件：
+
+```sh
+hadoop FileDecompressor file.gz
+```
+
+CompressionCodecFactory加载表5-2除LZO之外的所有codec，同样也加载io.compression.codecs配置属性(参见表5-3)列表中的所有codec。在默认情况下，该属性列表是空的，可能只有在拥有一个希望注册的定制codec(例如外部管理的LZO codec)时才需要加以修改。
+
+​															**表5-3. 压缩codec的属性**
+
+| 属性名                | 属性           | 默认值 | 描述                                                  |
+| --------------------- | -------------- | ------ | ----------------------------------------------------- |
+| io.compression.codecs | 逗号分隔的类名 | 空     | 用于压缩/解压缩的额外自定义的CompressionCodec类的列表 |
+
+**3. 原生类库**
+
+为了提高性能，最好使用原生 (native)类库来实现压缩和解压缩。例如：在一个测试中，使用原生gzip类库与内置的Java实现相比可以减少约一半的解压缩时间和约10%的压缩时间。
+
+​															**表5-4. 压缩代码库的实现**
+
+| 压缩格式 | 是否有Java实现 | 是否有原生实现 |
+| -------- | -------------- | -------------- |
+| DEFLATE  | 是             | 是             |
+| gzip     | 是             | 是             |
+| bzip2    | 是             | 否             |
+| LZO      | 否             | 是             |
+| LZ4      | 否             | 是             |
+| Snappy   | 否             | 是             |
+
+可以通过Java的java.library.path属性指定原生代码库，HADOOP_HOME/ect/hadoop中的hadoop脚本可以设施该属性；也可以在代码中手动设置；
+
+默认情况下，Hadoop会根据自身运行的平台搜索原生代码库，如果找到相应的代码库就会自动加载。这意味着，无需为了使用原生代码库而修改任何设置。但是，在某些情况下，例如调试一个压缩相关问题时，可能需要禁用原生代码库。将属性io.native.lib.available的值设置成false即可，这可确保使用内置的Java代码库(如果有的话)。
+
+**4. CodecPool**
+
+如果使用的是原生代码库并且需要在应用中执行大量压缩和解压缩操作，可以考虑使用CodecPool，它支持反复使用压缩和解压缩，以分摊创建这些对象的开销。
+
+**范例5-3. 使用压缩池对读取自标准输入的数据进行压缩，然后将其写到标准输出**
+
+```java
+public class PooledStreamCompressor {
+  
+    public static void main(String[] args) throws Exception {
+      String codecClassname = args[0]; 
+      Class<?> codecClass = Class.forName(codecClassname);
+	    Configuration conf = new Configuration();
+	    CompressionCodec codec = (CompressionCodec)ReflectionUtils.newInstance(codecClass, conf);
+      Compressor compressor = null;
+      try {
+        compressor = CodecPool.getCompressor(codec);
+	      CompressionOutputStream out = codec.createOutputStream(System.out, compressor);
+	      IOUtils.copyBytes(System.in, out, 4096, false);
+	      out.finish();
+    	} finally {
+        // 在不同的数据流之间来回复制数据，出现异常时，则确保compressor对象返回池中
+      	CodecPool.returnCompressor(compressor);
+    	}
+    }  
+}
+```
+
+### 5.2.2 压缩和输入分片
+
+在考虑如何压缩将由MapReduce处理数据时，压缩格式是否支持切分(splitting)十分重要。以一个存储在HDFS文件系统中且压缩前大小为1 GB的文件为例。如果HDFS的块大小设置为128 MB，那么该文件将被存储在8个块中，把这个文件作为输入数据的MapReduce作业，将创建8个输入分片，其中每个分片作为一个单独的map任务的输入被独立处理。
+
+假设文件经过gzip压缩，且压缩后文件大小为1GB，与此前一样，HDFS将这个文件保存为8个数据块。但是，将每个数据块单独作为一个输入分片是无法实现工作的，因为无法实现从gizp压缩数据流的任意位置读取数据，所以让map任务独立于其他任务进行数据读取是行不通的。gzip格式使用DEFLATE算法来存储压缩后的数据，而DEFLATE算法将数据存储在一系列连续的压缩块中。每个块的起始位置没有任何形式的标记，以读取时无法从数据流的任意当前位置前进到下一块的起始位置读取下一个数据块，从而实现与整个数据流的同步。由于上述原因，**gzip并不支持文件切分**。
+
+在这种情况下，MapReduce会采用正确的做法，不会尝试切分gzip压缩文件，因为知道输入是gzip压缩文件(通过文件扩展名看出)且gzip不支持切分。这是可行的，但**牺牲了数据的本地性**：一个map任务处理8个HDFS块，而其中大多数块并没有存储在执行该map任务的节点上。而且，map任务数越少，作业的粒度就较大，因而运行的时间可能会更长。bzip2文件提供不同数据块之间的同步标识(pi的48位近似值)，因而它支持切分。
+
+**应该使用哪种压缩格式**
+
+Hadoop应用处理的数据集非常大，因此需要借助压缩，使用哪种压缩格式与待处理的文件的大小、格式和所使用的工具相关。下面有一些建议，大致是按照效率从高到低排列的。
+
+- 使用容器文件格式，例如顺序文件(见5.4.1节)、Avro数据文件、ORCFiles或者Parquet文件，所有这些文件格式同时支持压缩和切分，通常最好与一个快速压缩工具联合使用，如：LZO，LZ4或者Snappy。
+- 使用支持切分的压缩格式，例如bzip2(尽管bzip2非常慢)，或者使用通过索引实现切分的压缩格式，例如LZO。
+- 将应用中文件切分为块，并使用任意一种压缩格式为每个数据块建立压缩文件，这种情况下，需要合理选择数据块的大小，以确保压缩后数据块的大小近似于HDFS块的大小。
+- 存储未压缩文件
+
+**对于大文件来说，不要使用不支持切分和压缩的文件格式，因为会失去数据的本地特性，进而造成MapReduce应用效率低下**。
+
+### 5.2.3 在MapReduce中使用压缩
+
+前面讲到通过CompressionCodecFactory来推断CompressionCodec时指出，如果输入文件是压缩的，那么在根据文件扩展名推断出相应的codec后，**MapReduce会在读取文件时自动解压缩文件**。
+
+若要压缩MapReduce作业的输出，有两种配置方案：
+
+- 在作业配置过程中将mapreduce.output.fileoutputformat.compress属性设置为true，将map reduce.output.fileoutputformat.compress.codec属性设置为要使用的压缩codec类名。
+- 在FileOutputFormat中使用更便捷的方法设置这些属性，如范例5-4所示。
+
+**范例5-4. 对查找最高气温作业所产生输出进行压缩**
+
+```java
+public class MaxTemperatureWithCompression {
+  
+   public static void main(String[] args) throws IOException {
+     if (args.length != 2) {
+     	System.err.println("Usage: MaxTemperatureWithCompression <input path>" + "<output path>");
+      System.exit(-1);
+     }
+     Job job = new Job();
+     FileInputFormat.addInputPath(job, new Path(args[0]));
+     FileOutputFormat.addOuputPath(job, new Path(args[1]));
+     job.setOutputKey(Text.class);
+     job.setOutputValueClass(IntWritable.class);
+     FileOutputFormat.setCompressOutput(job, true);
+     FileOutputFormat.setOutputCompressorClass(job, GzipCodec.class);
+     job.setMapperClass(MaxTemperatureMapper.class);
+     job.setCombinerClass(MaxTemperatureReducer.class);
+     job.setReducerClass(MaxTemperatureReducer.class);
+     System.exit(job.waitForCompletion(true) ? 0 : 1);
+   }
+  
+}
+```
+
+按照如下指令对压缩后的输入运行程序：
+
+```
+ hadoop MaxTemperatureWithCompression input/ncdc/sample.txt.gz output
+```
+
+如果为输出生成顺序文件(sequence file)，可以设置mapreduce.out put.fileoutputformat.compress.type属性来控制限制使用压缩格式。默认值是RECORD，即针对每条记录进行压缩。如果将其改为BLOCK，将针对一组记录进行压缩，这是推荐的压缩策略，因为它的压缩效率更高(参见5.4.1节)。SequenceFileOutputFormat类另外还有一个静态方法putCompressionType()，可以用来便捷地设置该属性。
+
+表5-5归纳概述了用于设置MpaReduce作业输出的压缩格式的配置属性。如果MapReduce驱动使用Tool接口(参见6.2.2节)，则可以通过命令行将这些属性传递给程序，这比通过程序代码来修改压缩属性更加简便。
+
+​														**表5-5. MapReduce的压缩属性**
+
+| 属性名                                           | 类型    | 默认值                                      | 描述                                                  |
+| ------------------------------------------------ | ------- | ------------------------------------------- | ----------------------------------------------------- |
+| mapreduce.output.fileoutputformat.compress       | boolean | false                                       | 是否压缩输出                                          |
+| mapreduce.output.fileoutputformat.compress.codec | 类名称  | org.apache.hadoop.io. compress.DefaultCodec | map输出所用的压缩codec                                |
+| mapreduce.output.fileoutputformat.compress.type  | String  | RECORD                                      | 顺序文件输出可以使用的压缩类型：NONE、RECORD或者BLOCK |
+
+**对map任务输出进行压缩**
+
+尽管mapreduce应用读/写的未经压缩的数据，但如果对map阶段的中间结果进行压缩，可以获得不少好处。由于map任务的输出需要写到磁盘文件并通过网络传输到redcuer节点，所以通过使用LZO、LZ4或者Snappy这样的快速压缩方式，可以获得性能的提升，因为需要传输的数据减少了，启用map任务输出压缩和设置压缩格式的配置属性如表5-6所示。
+
+​													**表5-6. map任务输出的压缩属性**
+
+| 属性名                              | 类型    | 默认值                                      | 描述                      |
+| ----------------------------------- | ------- | ------------------------------------------- | ------------------------- |
+| mapreduce.map.output.compress       | boolean | false                                       | 是否对map任务输出进行压缩 |
+| mapreduce.map.output.compress.codec | class   | org.apache.hadoop.io. compress.DefaultCodec | map输出所用的压缩codec    |
+
+在作业中启用map任务输出gzip压缩格式的代码：
+
+``` java
+Configuration conf = new Configuration();
+conf.setBoolean(Job.MAP_OUTPUT_COMPRESS, true);
+conf.setClass(Job.MAP_OUTPUT_COMPRESS_CODEC, GzipCodec.class,CompressionCodec.class);
+Job job = new Job(conf);
+```
+
