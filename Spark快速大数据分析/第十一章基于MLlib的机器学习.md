@@ -155,5 +155,29 @@ MLlib包含一些特有的数据类型，它们位于 org.apache.spark.mllib 包
 
 大多数算法直接操作由 Vector、LabeledPoint 或 Rating 对象组成的 RDD。可以用任意方式创建出这些对象，不过一般来说需要通过对外部数据进行转化操作来构建出RDD——例如，通过读取一个文本文件或者运行一条Spark SQL命令。接下来，使用 map() 将你的数据对象转为 MLlib 的数据类型。
 
+**操作向量**
 
+作为 MLlib 中最常用的数据类型，Vector 类有一些需要注意的地方。
+
+- 向量有两种：稠密向量与稀疏向量。稠密向量把所有维度的值存放在一个浮点数组中，例如，一个 100 维的向量会存储 100 个双精度浮点数。相比之下，稀疏向量只把各 维度中的非零值存储下来。当最多只有**10%**的元素为非零元素时，通常更倾向于使用稀疏向量(不仅是出于对内存使用的考虑，也是出于对速度的考虑)。许多特征提取技术都会生成非常稀疏的向量，所以这种方式常常是一种很关键的优化手段。
+- 创建向量的方式在各个语言中有一些细微的差别。在 Python 中，传递的NumPy数组都表示一个稠密向量，也可以使用 mllib.linalg.Vectors 类创建其他类型的向量(如例 11-4 所示)。而在 Java 和 Scala 中，都需要使用 mllib.linalg. Vectors 类(如例 11-5 和例 11-6 所示)。
+
+**例 11-4:用 Python 创建向量**
+
+```python
+from numpy import array
+from pyspark.mllib.linalg import Vectors
+
+# 创建稠密向量<1.0, 2.0, 3.0>
+denseVec1 = array([1.0, 2.0, 3.0]) # NumPy数组可以直接传给MLlib 
+denseVec2 = Vectors.dense([1.0, 2.0, 3.0]) # 或者使用Vectors类来创建
+
+# 创建稀疏向量<1.0, 0.0, 2.0, 0.0>;该方法只接收
+# 向量的维度(4)以及非零位的位置和对应的值
+# 这些数据可以用一个dictionary来传递，或使用两个分别代表位置和值的list
+sparseVec1 = Vectors.sparse(4, {0: 1.0, 2: 2.0})
+sparseVec2 = Vectors.sparse(4, [0, 2], [1.0, 2.0])
+```
+
+**例 11-5:用 Scala 创建向量**
 
