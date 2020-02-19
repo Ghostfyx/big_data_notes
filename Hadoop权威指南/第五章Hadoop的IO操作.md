@@ -337,3 +337,202 @@ conf.setClass(Job.MAP_OUTPUT_COMPRESS_CODEC, GzipCodec.class,CompressionCodec.cl
 Job job = new Job(conf);
 ```
 
+## 5.3 序列化
+
+序列化(Serialization)是指将结构化对象转化为字节流以便在网络上传输或写入到磁盘进行永久存储的过程。反序列化(deserialization)是指将字节流转回结构化对象的逆过程。
+
+序列化用于分布式数据处理的两大领域：进程间通信和永久存储。
+
+在Hadoop中，系统中多个节点上进程间的通信是通过远程过程调用(RPC, remote procedure call)实现的，RPC协议将消息序列化成二机制后发送到远程节点，远程节点接着将二进制流反序列化为原始消息。通常情况下，RPC序列化格式如下：
+
+- **紧凑**，紧凑格式能够充分利用网络带宽(数据中心中最稀缺的资源)；
+- **快速**，进程间通信形成了分布式系统的骨架，所以需要尽量减少序列化和反序列化的性能开销，这是最基本的。
+- **可扩展**，为了满足新的需求，协议不断变化，所以在控制客户端和服务器的过程中，需要直接引进相应的协议。例如，需要能够在方法调用的过程中增添新的参数，并且新的服务器需要能够接受来自老客户端的老格式的消息(无新增的参数)。
+- **支持互操作**，对于某些系统来说，希望能支持以不同语言写的客户端与服务器交互，所以需要设计需要一种特定的格式来满足这一需求。
+
+RPC序列化格式的四大理想属性对持久存储格式而言也很重要。我们希望存储格式比较紧凑(进而高效使用存储空间)、快速(读/写数据的额外开销比较小)、可扩展(可以透明地读取老格式的数据)且可以互操作(以可以使用不同的语言读/写永久存储的数据)。
+
+Hadoop使用的是自己的序列化格式Writable，它绝对紧凑、速度快，但不太容易用Java以外的语言进行扩展或使用。接下来的三个小节中，要进行深入探讨Writable，然后再介绍Hadoop支持的其他序列化框架。Avro(一个克服了Writable部分不足的序列化系统)将在第12章中讨论。
+
+### 5.3.1 Writable接口
+
+Writable接口定义了两个方法：一个将其状态写入DataOutput二进制流，另一个从DataInput二进制流读取状态：
+
+```java
+package org.apache.hadoop.io;
+import java.io.DataOutput;
+import java.io.DataInput;
+import java.io.IOException;
+
+public interface Writable {
+  void write(DataOutput out) throws IOException;
+  
+  void readFields(DataInput in) throws IOException;
+}
+```
+
+**WritableCompareble接口和Comparator**
+
+IntWritable实现原始的WritableComparable接口，该接口继承自Writable和java.lang.Comparable接口：
+
+```java
+package org.apache.hadoop.io;
+
+public interface WritableComparable<T> extends Writable, Comparable<T> {
+}
+```
+
+ 对于MapReduce来说，类型比较非常重要，因为中间有个基于键的排序阶段。Hadoop提供的一个优化接口是继承自Java Comparator的RawComparator接口：
+
+```java
+package org.apache.hadoop.io;
+
+import java.util.Comparator;
+
+public interface RawComparator<T> extends Comparator<T> {
+
+public int compare(byte[] b1, int s1, int l1, byte[] b2, int s2, int l2);
+
+}
+```
+
+该接口允许其实现直接比较数据流中的记录，无需先把数据流反序列化为对象，避免了新建对象的额外开销。例如：根据IntWritable接口实现的comparator实现原始的compare()方法，该方法可以从每个字节数组b1和b2中读取给定起始位置(s1和s2)以及长度(l1和l2)的一个整数进而直接进行比较。
+
+WritableComparator是对继承自WritableComparable类的RawComparator类的一个通用实现。它提供两个主要功能。
+
+- 第一，它提供了对原始compare()方法的一个默认实现，该方法能够反序列化将在流中进行比较的对象，并调用对象的compare()方法。
+
+- 第二，它充当的是RawComparator实例的工厂(已注册Writable的实现)。例如，为了获得IntWritable的comparator，直接调用：
+
+	```java
+	RawComparator<IntWritable> comparator = WritableComparator.get (IntWritable.class);
+	```
+
+	这个comparator可以用于比较两个IntWritable对象：
+
+	```java
+	IntWritable w1 = new IntWritable(163);
+	IntWritable w2 = new IntWritable(67);
+	assertThat(comparator.compare(w1, w2), greaterThan(0));
+	```
+
+	或其序列化表示：
+
+	```java
+	byte[] b1 = serialize(w1);
+	byte[] b2 = serialize(w2);
+	assertThat(comparator.compare(b1, 0, b1.length, b2, 0, b2.length),greaterThan(0));
+	```
+
+### 5.2.3 Writable类
+
+Hadoop自带的org.apache.hadoop.io包中有广泛的Writable类可供选择。它们的层次结构如图5-1所示。
+
+![](./img/5-1.jpg)
+
+​															**图5-1. Writable类的层次结构**
+
+**1. Java基本了警的Wirtable封装器**
+
+Writable类对所有Java基本类型(参见表5-7)提供封装，char类型除外(可以存储在IntWritable中)。所有的封装包含get()和set()两个方法用于读取或存储封装的值。
+
+​												**表5-7. Java基本类型的Writable类**
+
+| Java基本类型 | Writable实现    | 序列化大小(字节) |
+| ------------ | --------------- | ---------------- |
+| boolean      | BooleanWritable | 1                |
+| byte         | ByteWritable    | 1                |
+| Short        | ShortWritable   | 2                |
+| int          | IntWritable     | 4                |
+|              | VintWritable    | 1~5              |
+| float        | FloatWritable   | 4                |
+| long         | LongWritable    | 8                |
+|              | VlongWritable   | 1～9             |
+| double       | DoubleWritable  | 8                |
+
+对整数进行编码时，有两种选择，即定长格式(IntWritale和LongWritable)和变长格式(VIntWritable和VLongWritable)。需要编码的数值如果相当小(在-127和127之间，包括-127和127)，变长格式就是只用一个字节进行编码；否则，使用第一个字节来表示数值的正负和后跟多少个字节。例如，值163需要两个字节：
+
+```java
+byte[] data = serialize(new VIntWritable(163));
+
+assertThat(StringUtils.byteToHexString(data), is("8fa3"));
+```
+
+**如何在定长格式和变长格式之间进行选择呢**？定长格式编码很适合数值在整个值域空间中分布非常均匀的情况，例如使用精心设计的哈希函数。然而，大多数数值变量的分布都不均匀，一般而言变长格式会更节省空间。变长编码的另一个优点是可以在VIntWritable和VLongWritable转换，因为它们的编码实际上是一致的。所以选择变长格式之后，便有增长的空间，不必一开始就用8字节的long表示。
+
+**2. Text类型**
+
+Text是针对UTF-8序列的Writable类。一般可以认为它是java.lang.String的Writable等价。
+
+Text类使用整型(通过变长编码的方式)来存储字符串编码中所需的字节数，因此该最大值为2 GB。另外，Text使用标准UTF-8编码，这使得能够更简便地与其他理解UTF-8编码的工具进行交互操作。
+
+**3. BytesWritable**
+
+BytesWritable是对二进制数据数组的封装。它的序列化格式为一个指定所含数据字节数的整数域(4字节)，后跟数据内容本身。例如，长度为2的字节数组包含数值3和5，序列化形式为一个4字节的整数(00000002)和该数组中的两个字节(03和05)：
+
+```java
+BytesWritable b = new BytesWritable(new byte[] { 3, 5 });
+
+byte[] bytes = serialize(b);
+
+assertThat(StringUtils.byteToHexString(bytes), is("000000020305"));
+```
+
+BytesWritable是可变的，其值可以通过set()方法进行修改。和Text相似，BytesWritable类的getBytes()方法返回的字节数组长度(容量)可能无法体现BytesWritable所存储数据的实际大小。可以通过getLength()方法来确定BytesWritable的大小。示例如下：
+
+```java
+b.setCapacity(11);
+assertThat(b.getLength(), is(2));
+assertThat(b.getBytes().length, is(11));
+```
+
+**4. NullWritable**
+
+NullWritable是Writable的特殊类型，它的序列化长度为0。它并不从数据流中读取数据，也不写入数据。它充当占位符；例如，在MapReduce中，**如果不需要使用键或值的序列化地址**，就可以将键或值声明为NullWritable，这样可以高效存储常量空值。如果希望存储一系列数值，与键-值对相对，NullWritable也可以用作在SequenceFile中的键。它是一个不可变的单实例类型，通过调用NullWritable.get()方法可以获取这个实例。
+
+**5. ObjectWirtable和GenericWritable**
+
+ObjectWritable是对Java基本类型(String，enum，Writable，null或这些类型组成的数组)的一个通用封装。它在Hadoop RPC中用于对方法的参数和返回类型进行封装和解封装。
+
+当一个字段包含多个类型，ObjectWritable非常有用：例如，如果SequenceFile中的值包含多个类型，就可以将值类型声明为ObjectWritable，并将每个类型封装在一个ObjectWritable中。作为一个通用的机制，每次序列化都写封装类型的名称，这非常浪费空间。如果封装的类型数量比较少并且能够提前知道，那么可以通过使用静态类型的数组，并使用对序列化后的类型的引用加入位置索引来提高性能。GenericWritable类采取的就是这种方式，所以你得在继承的子类中指定支持什么类型。
+
+**6. Writable集合类**
+
+org.apache.hadoop.io软件包有6个Writable集合类，分别是ArrayWritable、ArrayPrimitiveWritable、TwoDArrayWritable、MapWritable、SortedMapWritable以及EnumMapWritable。
+
+ArrayWritable和TwoDArrayWritable是对Writable的数组和二维数组的实现。ArrayWritable或TwoDArrayWritable中所有元素必须是同一类的实例(在构造函数中指定)，如下所示：
+
+```java
+ArrayWritable writable = new ArrayWritable(Text.class);
+```
+
+如果Writable根据类型来定义，例如SequenceFile的键或值，或更多时候作为MapReduce的输入，则需要继承ArrayWritable(或相应的TwoDArray Writable类)并设置静态类型。示例如下：
+
+```java
+public class TextArrayWritable extends ArrayWritable {
+  public TextArrayWritable() {
+    super(Text.class);
+  }
+}
+```
+
+ArrayWritable和TwoDArrayWritable都有get()、set()和toArray()方法。toArray()方法用于新建该数组(或二维数组)的一个“浅拷贝”(shallow copy)。
+
+ArrayPrimitiveWritable是对Java基本数组类型的一个封装。调用set()方法时，可以识别相应组件类型，因此无需通过继承该类来设置类型。
+
+MapWritable和SortedMapWritable分别实现了java.util.Map<Writable，Writable>和java.util.SortedMap<WritableComparable, Writable>。每个键/值字段使用的类型是相应字段序列化形式的一部分。类型存储为单个字节(充当类型数组的索引)。
+
+在org.apache.hadoop.io包中，数组经常与标准类型结合使用，而定制的Writable类型也通常结合使用，但对于非标准类型，则需要在包头指明所使用的数组类型。根据实现，MapWritable类和SortedMapWritable类通过正byte值来指示定制的类型，所以在MapWritable和SortedMapWritable实例中最多可以使用127个不同的非标准Wirtable类。下面显示使用了不同键值类型的MapWritable实例：
+
+```java
+MapWritable src = new MapWritable();
+src.put(new IntWritable(1), new Text("cat"));
+src.put(new VIntWritable(2), new LongWritable(163));
+MapWritable dest = new MapWritable();
+WritableUtils.cloneInto(dest, src);
+assertThat((Text) dest.get(new IntWritable(1)), is(new Text("cat")));
+assertThat((LongWritable) dest.get(new VIntWritable(2)),
+is(new LongWritable(163)));
+```
+
+可以通过Writable集合类来实现集合和列表。可以使用MapWritable类型(或针对排序集合，使用SortedMapWritable类型)来枚举集合中的元素，用NullWritable类型枚举值。对集合的枚举类型可采用EnumSetWritable。对于单类型的Writable列表，使用ArrayWritable就足够了，但如果需要把不同的Writable类型存储在单个列表中，可以用GenericWritable将元素封装在一个ArrayWritable中。另一个可选方案是，可以借鉴MapWritable的思路写一个通用的ListWritable。
