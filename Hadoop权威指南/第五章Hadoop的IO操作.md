@@ -717,3 +717,333 @@ public static class FirstComparator extends WritableComparator {
 尽管大多数MapReduce程序使用的都是Writable类型的键和值，但这并不是MapReduce API强制要求使用的。事实上，可以使用任何类型，只要能有一种机制对每个类型进行类型与二进制表示的来回转换就可以。
 
 为了支持这一机制，Hadoop有一个针对可替换序列化框架(serialization framework)的API。序列化框架用一个Serialization实现(包含在org.apache.hadoop. io.serializer包中)来表示。例如，WritableSerialization类是对Writable类型的Serialization实现。
+
+Serialization对象定义了从类型到Serializer实例(将对象转换为字节流)和Deserializer实例(将字节流转换为对象)的映射方式。
+
+为了注册Serialization实现，需要将io.serizalizations属性设置为一个由逗号分隔的类名列表。它的默认值包括org.apache.hadoop.io.serializer. WritableSerialization和Avro指定(Specific)序列化及Reflect(自反)序列化类(详见12.1节)，这意味着只有Writable对象和Avro对象才可以在外部序列化和反序列化。
+
+Hadoop包含一个名为JavaSerialization的类，该类使用Java Object Serialization。尽管它方便了我们在MapReduce程序中使用标准的Java类型，如Integer或String，但不如Writable高效，所以不建议使用。
+
+**序列化IDL**
+
+还有许多其他序列化框架从不同角度来解决该问题：不通过代码来定义类型，而使用**接口定义语言(IDL, Interface Description Language)**以不依赖于语言方式进行声明。
+
+两个比较流行的序列化框架Apache Thrift和Google的Protocol Buffers ，常常用作二进制数据的永久存储格式。MapReduce格式对该类的支持有限，[1] 但在Hadoop内部，部分组件仍使用上述两个序列化框架来实现RPC和数据交换。
+
+Avro是一个基于IDL的序列化框架，非常适用于Hadoop的大规模数据处理。我们将在第12章讨论Avro。
+
+**Tips 为什么不使用Java Object Serialization**
+
+Java有自己的序列化机制，称为“Java Object Serialization”(通常简称为“Java Serialization”)，该机制与编程语言紧密相关，所以我们很自然会问为什么不在Hadoop中使用该机制。针对这个问题，Doug Cutting是这样解释：
+
+Java Serization看起来太复杂，而我认为需要有一个至精至简的机制，可以用于精确控制对象的读和写，这个机制将是Hadoop的核心。使用Java Serialization虽然可以获得一些控制权，但用起来非常纠结。
+
+不用RMI(Remote  Method Invocation远程方法调用)也出于类似的考虑。高效、高性能的进程间通信是Hadoop的关键。我觉得我们需要精确控制连接、延迟和缓冲的处理方式，RMI对此无能为力。”
+
+## 5.4 基于文件的数据结构
+
+对于某些应用，我们需要一种特殊的数据结构来存储自己的数据。对于基于MapReduce的数据处理，将每个二进制数据大对象(blob)单独放在各自的文件中不能实现可扩展性，所以，Hadoop为此开发了很多更高层次的容器。
+
+### 5.4.1 SequenceFile
+
+SequenceFile为二进制键-值对提供了一个持久数据结构。
+
+SequenceFiles也可以作为小文件的容器。HDFS和MapReduce是针对大文件优化的，所以通过SequenceFile类型将小文件包装起来，可以获得更高效率的存储和处理。在8.2.1节中，讲到将整个文件作为一条记录处理时，提供了一个程序，它将若干个小文件打包成一个SequenceFile类。
+
+**1. SequenceFile写操作**
+
+通过createWriter( )静态方法可以创建SequenceFile对象，并返回SequenceFile.Writer实例。该静态方法有多个重载版本，但都需要指定待写入的数据流(FSDataOutputStream或FileSystem对象和Path对象)，Configuration对象，以及键和值的类型。可选参数包括压缩类型以及相应的codec，Progressable回调函数用于通知写入的进度，以及在SequenceFile头文件中存储的Metadata实例。
+
+存储在SequenceFile中的键和值并不一定是writable类型，只要能被Serialization序列化和反序列化，任何类型都可以。
+
+一旦拥有SequenceFile.Writer实例，就可以通过append()方法在文件末尾附加键-值对。写完后，可以调用close()方法(SequenceFile.Writer实现了java.io.Closeable接口)。
+
+**范例5-10. 写入SequenceFile对象**
+
+```java
+public class SequenceFileWriteDemo {
+   private static final String[] DATA = {
+   "One, two, buckle my shoe",
+   "Three, four, shut the door",
+   "Five, six, pick up sticks",
+   "Seven, eight, lay them straight",
+   "Nine, ten, a big fat hen"
+  };
+
+    public static void main(String[] args) throws IOException {
+      String uri = args[0];
+      Configuration conf = new Configuration();
+      FileSystem fs = FileSystem.get(URI.create(uri), conf);
+      Path path = new Path(uri);
+      IntWritable key = new IntWritable();
+      Text value = new Text();
+      SequenceFile.Writer writer = null;
+      try {
+        writer = SequenceFile.createWriter(fs, conf, path,
+            key.getClass(), value.getClass());
+        for (int i = 0; i < 100; i++) {
+          key.set(100 - i);
+          value.set(DATA[i % DATA.length]);
+          System.out.printf("[%s]\t%s\t%s\n", writer.getLength(), key, value);
+          writer.append(key, value);
+        }
+      } finally {
+        IOUtils.closeStream(writer);
+      }
+  }
+}
+```
+
+顺序文件中存储的键-值对，键是从100到1降序排列的整数，表示为IntWritable对象，值是Text对象。在将每条记录追加到SequenceFile. Writer实例末尾之前，调用getLength()方法来获取文件的当前位置。把这个位置信息和键-值对输出到控制台。结果如下所示：
+
+```xml
+% hadoop SequenceFileWriteDemo numbers.seq
+
+[128]   100     One, two, buckle my shoe
+[173]   99      Three, four, shut the door
+[220]   98      Five, six, pick up sticks
+[264]   97      Seven, eight, lay them straight
+[314]   96      Nine, ten, a big fat hen
+[359]   95      One, two, buckle my shoe
+[404]   94      Three, four, shut the door
+[451]   93      Five, six, pick up sticks
+[495]   92      Seven, eight, lay them straight
+[545]   91      Nine, ten, a big fat hen
+...
+[1976]  60      One, two, buckle my shoe
+[2021]  59      Three, four, shut the door
+[2088]  58      Five, six, pick up sticks
+[2132]  57      Seven, eight, lay them straight
+[2182]  56      Nine, ten, a big fat hen
+...
+[4557]  5       One, two, buckle my shoe
+[4602]  4       Three, four, shut the door
+[4649]  3       Five, six, pick up sticks
+[4693]  2       Seven, eight, lay them straight
+[4743]  1       Nine, ten, a big fat hen
+```
+
+**2. SequenceFile的读操作**
+
+从头到尾读取顺序文件不外乎创建SequenceFile.Reader实例后反复调用next( )方法迭代读取记录。读取的是哪条记录与使用的序列化框架相关。如果使用的是Writable类型，那么通过键和值作为参数的next()方法可以将数据流中的下一条键-值对读入变量中：
+
+```java
+public boolean next(Writable key, Writable val)
+```
+
+如果键-值对成功读取，则返回true，如果已读到文件末尾，则返回false。
+
+对于其他非Writable类型的序列化框架(比如Apache Thrift)，则应该使用下面两个方法：
+
+```java
+public Object next(Object key) throws IOException
+
+public Object getCurrentValue(Object val) throws IOException
+```
+
+如果next()方法返回的是非null对象，则可以从数据流中读取键、值对，并且可以通过getCurrentValue()方法读取该值。否则，如果next()返回null值，则表示已经读到文件末尾。
+
+范例5-11中的程序显示了如何读取包含Writable类型键、值对的顺序文件。注意如何通过调用getKeyClass()方法和getValueClass()方法进而发现SequenceFile中所使用的类型，然后通过ReflectionUtils对象生成常见键和值的实例。通过这个技术，该程序可用于处理有Writable类型键、值对的任意一个顺序文件。
+
+**范例5-11. 读取SequenceFile**
+
+```java
+public class SequenceFileReadDemo {
+  public static void main(String[] args) throws IOException {
+    String uri = args[0];
+    Configuration conf = new Configuration();
+    FileSystem fs = FileSystem.get(URI.create(uri), conf);
+		Path path = new Path(uri);
+    SequenceFile.Reader reader = null;
+    try {
+        reader = new SequenceFile.Reader(fs, path, conf);
+        Writable key = (Writable)
+        ReflectionUtils.newInstance(reader.getKeyClass(), conf);
+        Writable value = (Writable)
+        ReflectionUtils.newInstance(reader.getValueClass(), conf);
+        long position = reader.getPosition();
+        while (reader.next(key, value)) {
+          String syncSeen = reader.syncSeen() ? "*" : "";
+          System.out.printf("[%s%s]\t%s\t%s\n", position, syncSeen, key, value);
+          position = reader.getPosition(); // beginning of next record
+      }
+    } finally {
+      IOUtils.closeStream(reader);
+}
+  }
+}
+```
+
+该程序的另一个特性是能够显示顺序文件中同步点的位置信息。同步点指的是数据读取迷路后能够再一次与记录边界同步的数据流中的某个位置，例如：在数据流中由于搜索而跑到任意位置后可采取此动作。
+
+同步点是由SequenceFile.Writer记录的，后者在顺序文件写入过程中插入一个特殊项以便每隔几个记录便有一个同步标识。这样的特殊项非常小，因而只造成很小的存储开销，不到1%。同步点始终位于记录的边界处。
+
+运行范例5-11的程序后，会显示星号表示的顺序文件中的同步点。
+
+```xml
+% hadoop SequenceFileReadDemo numbers.seq
+[128]   100     One, two, buckle my shoe
+[173]   99      Three, four, shut the door
+[220]   98      Five, six, pick up sticks
+[264]   97      Seven, eight, lay them straight
+[314]   96      Nine, ten, a big fat hen
+[359]   95      One, two, buckle my shoe
+[404]   94      Three, four, shut the door
+[451]   93      Five, six, pick up sticks
+[495]   92      Seven, eight, lay them straight
+[545]   91      Nine, ten, a big fat hen
+[590]   90      One, two, buckle my shoe
+...
+[1976]  60      One, two, buckle my shoe
+[2021*] 59      Three, four, shut the door
+[2088]  58      Five, six, pick up sticks
+[2132]  57      Seven, eight, lay them straight
+[2182]  56      Nine, ten, a big fat hen
+...
+[4557]  5       One, two, buckle my shoe
+[4602]  4       Three, four, shut the door
+[4649]  3       Five, six, pick up sticks
+[4693]  2       Seven, eight, lay them straight
+[4743]  1       Nine, ten, a big fat hen
+```
+
+在顺序文件中搜索给定位置有两种方法：
+
+第一种是调用seek()方法，该方法将读指针指向文件中指定的位置。例如，可以按如下方式搜查记录边界：
+
+```java
+reader.seek(2021);
+assertThat(reader.next(key, value), is(true));
+assertThat(((IntWritable) key).get(), is(95));
+```
+
+但如果给定位置不是记录边界，调用next()方法时就会出错：
+
+```java
+reader.seek(360);
+reader.next(key, value); // fails with IOException
+```
+
+第二种方法通过同步点查找边界记录。SequenceFile.Reader对象的sync(long position)方法可以将读取位置定位到position之后的下一个同步点。如果position之后没有同步了，那么当前读取位置将指向文件末尾。这样可以对数据流中的任意位置调用sync()方法(不一定是一个记录的边界)而且可以重新定位到下一个同步点并继续向后读取：
+
+```java
+reader.sync(360);
+assertThat(reader.getPosition(), is(2021L));
+assertThat(reader.next(key, value), is(true));
+assertThat(((IntWritable) key).get(), is(59));
+```
+
+SequenceFile.Writer对象有一个sync()方法，该方法可以在数据流的当前位置插入一个同步点。可以将加入同步点的顺序文件作为MapReduce的输入，因为该类顺序文件允许切分，由此该文件的不同部分可以由独立的map任务单独处理。
+
+**1. 通过命令行接口现实SequenceFile**
+
+hadoop fs命令有一个-text选项可以以文本形式显示顺序文件。该选项可以查看文件的代码，由此检测出文件的类型并将其转换成相应的文本。该选项可以识别gzip压缩文件、顺序文件和Avro数据文件；否则，便假设输入为纯文本文件。
+
+```xml
+% hadoop fs -text numbers.seq | head
+
+100     One, two, buckle my shoe
+99      Three, four, shut the door
+98      Five, six, pick up sticks
+97      Seven, eight, lay them straight
+96      Nine, ten, a big fat hen
+95      One, two, buckle my shoe
+94      Three, four, shut the door
+93      Five, six, pick up sticks
+92      Seven, eight, lay them straight
+91      Nine, ten, a big fat hen
+```
+
+**2. SequenceFile的排序和合并**
+
+MapReduce是对多个顺序文件进行排序或合并最有效的方法。MapReduce本身是并行的，并且可以由你制定使用多少个reducer(决定输出分区数)。
+
+例如，通过指定一个reducer，可以得到一个输出文件。我们可以使用Hadoop发行版自带的例子，通过指定键和值的类型来将输入和输出指定为顺序文件：
+
+```sh
+% hadoop jar \
+
+$HADOOP_HOME/share/hadoop/mapreduce/hadoop-mapreduce-examples-*.jar \
+
+sort -r 1 \
+
+-inFormat org.apache.hadoop.mapreduce.lib.input.SequenceFileInputFormat \
+
+-outFormat org.apache.hadoop.mapreduce.lib.output.SequenceFileOutputFormat \
+
+ -outKey org.apache.hadoop.io.IntWritable \
+
+ -outValue org.apache.hadoop.io.Text \
+
+ numbers.seq sorted
+```
+
+输入如下：
+
+```xml
+% hadoop fs -text sorted/part-r-00000 | head
+1       Nine, ten, a big fat hen
+2       Seven, eight, lay them straight
+3       Five, six, pick up sticks
+4       Three, four, shut the door
+5       One, two, buckle my shoe
+6       Nine, ten, a big fat hen
+7       Seven, eight, lay them straight
+8       Five, six, pick up sticks
+9       Three, four, shut the door
+10      One, two, buckle my shoe
+```
+
+**3. SequenceFile的格式**
+
+顺序文件由文件头和随后的一条或者多条记录组成，顺序文件的前三个字节为SEQ(顺序文件代码)，紧随其后的一个字节表示顺序文件的版本号。文件头还包括其他字段，例如：键/值类的名称，数据压缩细节、用户自定义元数据以及同步标识。同步标识用于在读取文件时能够从任意位置开始识别记录的边界，每个文件都有一个随机生成的同步标识，其值存储在文件头中。同步标识位于顺序文件中的记录与记录之间。同步标识的额外存储开销要求小于1%，所以没有必要在每条记录末尾添加该标识(特别是比较短的记录)。
+
+![](./img/5-2.jpg)
+
+​														**图5-2. 压缩前和压缩后的顺序文件的内部结构**
+
+记录内部的结构取决于是否启用压缩，如果已经启用压缩，则结构取决于是记录压缩还是数据块压缩。
+
+如果没有启用压缩(默认情况)，那么每条记录则由记录长度(字节数)、键长度、键和值组成。长度字段为4字节长的整数，遵循java.io.DataOutput类中writeInt()方法的协定。为写入顺序文件的类定义Serialization类，通过它来实现键和值的序列化。
+
+记录压缩格式与无压缩情况基本相同，只不过值是用文件头中定义的codec压缩的。**注意，键没有被压缩**。
+
+如图5-3所示，块压缩(Block compression)是指一次性压缩多条记录，因为它可以利用记录间的相似性进行压缩，所以相较于单条记录压缩方法，该方法的压缩效率更高。可以不断向数据块中压缩记录，直到块的字节数不小于io.seqfile. compress.blocksize属性中设置的字节数：默认为1 MB。每一个新块的开始处都需要插入同步标识。数据块的格式如下：首先是一个指示数据块中字节数的字段；紧接着是4个压缩字段(键长度、键、值长度和值)。
+
+![](./img/5-3.jpg)
+
+​										**图5-3. 采用块压缩方式之后，顺序文件的内部结构**
+
+### 5.4.2 MapFile
+
+MapFile是已经排过序的SequenceFile，它有索引，所以可以按键查找。索引自身就是一个SequenceFile，包含了map中的一小部分键（默认情况下，是每隔128个键）。由于索引能够加载进内存，因此可以提供对主数据文件的快速查找。主数据文件则是另一个SequenceFile，包含了所有的map条目，这些条目都按照键顺序进行了排序。
+
+MapFile提供了一个用于读写的、与SequenceFile非常类似的接口，当使用MapFile.Writer进行写操作时，map条目必须顺序添加，否则会抛出IOException异常。
+
+**1. MapFile变种**
+
+Hadoop在通用的键-值对MapFile接口上提供了一些变种。
+
+- SetFile：一个特殊的MapFile，用于存储Writable键的集合。键必须按照排好的顺序添加。
+- ArrayFile：键是一个整型，用于表示数组中元素的索引，而值是一个Writable值。
+- BloomMapFile：该变种提供了get()方法的一个高性能实现，对稀疏文件特别有用。该实现使用一个动态的布隆过滤器来检测某个给定的键是否在map文件中。这个测试非常快，因为是在内存中完成的，当且仅当key存在时，get()方法会被调用。
+
+### 5.4.3 其他文件格式与面向列的格式
+
+顺序文件和map文件是Hadoop中最早的、但并不是仅有的二进制文件格式，事实上，对于新项目而言，有更好的二进制文件格式可供选择。
+
+Avro数据文件(详见12.3节)在某些方面类似顺序文件，是面向大规模数据处理而设计的(紧凑且可切分)。但是Avro数据文件又是可移植的，它们可以跨越不同的编程语言使用。Avro数据文件中存储的对象使用模式来描述，而不是像Writable对象的实现那样使用Java代码(例如顺序文件就是这样的情况，这样的弊端是过于以Java为中心)。Avro数据文件被Hadoop生态系统的各组件广为支持，因此它们被默认为是对二进制格式的一种比较好的选择。
+
+顺序文件、map文件和Avro数据文件都是面向行的格式，意味着每一行的值在文件中是连续存储的。在面向列的格式中，文件中的行 (或等价的，Hive中的一张表)被分割成行的分片，然后每个分片以面向列的形式存储：首先存储每行第1列的值，然后是每行第2列的值，如此以往。该过程如图5-4所示。
+
+![](./img/5-4.jpg)
+
+​													**图5-4. 面向行的和面向列的存储**
+
+面向列的存储布局可以使一个查询跳过那些不必访问的列。假设一个只需要处理图5-4中表的第2列的查询。在像顺序文件这样面向行的存储中，即使是只需要读取第二列，整个数据行(存储在顺序文件的一条记录中)将被加载进内存。虽然 **延迟反序列化(lazy deserialization)**策略通过只反序列化那些被访问的列字段能节省一些处理开销，但这仍然不能避免从磁盘上读入一个数据行所有字节而付出的开销。
+
+如果使用面向列的存储，只需要把文件中第2列所对应的那部分(图中高亮部分)读入内存。一般来说，**面向列的存储格式对于那些只访问表中一小部分列的查询比较有效。相反，面向行的存储格式适合同时处理一行中很多列的情况。**
+
+由于必须在内存中缓存行的分片，而不是单独一行，因此面向列的存储格式需要更多的内存用户读写。并且，当出现写操作时，这种缓存通常不太可能太被控制(因为流式数据结构复杂，且数据量大，哪些数据需要被加载到缓存，哪些需要清理，很难控制)。因此，面向列的格式不适合流的写操作，这是因为，如果writer处理失败的话，当前的文件无法恢复。另一方面，对于面向行的存储格式，如顺序文件和Avro数据文件，可以一直读取到writer失败后的最后的同步点。由于这个原因，Flume(详见第14章)使用了面向行的存储格式。
+
+Hadoop的第一个面向列的文件格式是Hive的RCFile(Record Columnar File)，它已经被Hive的*ORCFile*(Optimized Record Columnar File)及*Parquet*取代(详见第13章)。*Parquet*是一个基于Google Dremel的通用的面向列的文件格式，被Hadoop组件广为支持。Avro也有一个面向列的文件格式，称为*Trevni*。
