@@ -181,3 +181,242 @@ sparseVec2 = Vectors.sparse(4, [0, 2], [1.0, 2.0])
 
 **例 11-5:用 Scala 创建向量**
 
+```scala
+import org.apache.spark.mllib.linalg.Vectors
+// 创建稠密向量<1.0, 2.0, 3.0>;Vectors.dense接收一串值或一个数组 
+val denseVec1 = Vectors.dense(1.0, 2.0, 3.0)
+val denseVec2 = Vectors.dense(Array(1.0, 2.0, 3.0))
+// 创建稀疏向量<1.0, 0.0, 2.0, 0.0>;该方法只接收
+// 向量的维度(这里是4)以及非零位的位置和对应的值
+val sparseVec1 = Vectors.sparse(4, Array(0, 2), Array(1.0, 2.0))
+```
+
+**例 11-6:用 Java 创建向量**
+
+```java
+import org.apache.spark.mllib.linalg.Vector;
+import org.apache.spark.mllib.linalg.Vectors;
+// 创建稠密向量<1.0, 2.0, 3.0>;Vectors.dense接收一串值或一个数组 
+Vector denseVec1 = Vectors.dense(1.0, 2.0, 3.0);
+Vector denseVec2 = Vectors.dense(new double[] {1.0, 2.0, 3.0});
+// 创建稀疏向量<1.0, 0.0, 2.0, 0.0>;该方法只接收
+// 向量的维度(这里是4)以及非零位的位置和对应的值
+Vector sparseVec1 = Vectors.sparse(4, new int[] {0, 2}, new double[]{1.0, 2.0});
+```
+
+在 Java 和 Scala 中，MLlib 的 Vector 类只是用来为数据表示服务的，而没有在用 户 API 中提供加法和减法这样的向量的算术操作。在 Python 中，你可以对稠密向量使用 NumPy 来进行这些数学操作，也可以把这些操作传给 MLlib。Java和Scala中，可以使用一些第三方的库，比如 Scala 中的 Breez或者 Java 中的 MTJ，然后再把数据转为 MLlib 向量。
+
+## 11.5 算法
+
+本节会介绍 MLlib 中主要的算法，以及它们的输入和输出类型，专注于如何调用并配置这些算法。
+
+### 11.5.1 特征提取
+
+mlib.feature包中包含一些用来进行常见特征转化的类，这些类有从文本(或其他表示)创建特征向量的算法，也有对特征向量进行正规化和伸缩变换的方法。
+
+**TF-IDF**
+
+词频—逆文档频率(简称 TF-IDF)是一种用来从文本文档(例如网页)中生成特征向量的 简单方法。它为文档中的每个词计算两个统计值:一个是词频(TF)，也就是每个词在文 档中出现的次数，另一个是逆文档频率(IDF)，用来衡量一个词在整个文档语料库中出现 的(逆)频繁程度。这些值的积，也就是 TF × IDF，展示了一个词与特定文档的相关程 度(比如这个词在某文档中很常见，但在整个语料库中却很少见)。
+
+MLlib 有两个算法可以用来计算 TF-IDF:HashingTF 和 IDF：
+
+HashingTF从一个文档中计算给定大小的词频向量，为了将词与向量顺序对应起来，使用了哈希法。在类似英语这样的语言中，有几十万个单词，因此将每个 单词映射到向量中的一个独立的维度上需要付出很大代价。而 HashingTF 使用每个单词对 所需向量的长度 *S* 取模得出的哈希值，把所有单词映射到一个 0 到 *S*-1 之间的数字上。由 此我们可以保证生成一个 *S* 维的向量。
+
+**例 11-7 在 Python 中使用了 HashingTF**
+
+```python
+from pyspark.mllib.feature import HashingTF
+sentence = "hello hello world"
+words = sentence.split() # 将句子切分为一串单词
+tf = HashingTF(10000) # 创建一个向量，其尺寸S = 10,000 
+tf.transform(words)
+rdd = sc.wholeTextFiles("data").map(lambda (name, text): text.split()) 
+tfVectors = tf.transform(rdd) # 对整个RDD进行转化操作
+```
+
+**例 11-8:在 Python 中使用 TF-IDF**
+
+```python
+from pyspark.mllib.feature import HashingTF, IDF
+# 将若干文本文件读取为TF向量
+rdd = sc.wholeTextFiles("data").map(lambda (name, text): text.split()) 
+tf = HashingTF()
+# RDD缓存
+tfVectors = tf.transform(rdd).cache()
+# 计算IDF，然后计算TF-IDF向量
+idf = IDF()
+idfModel = idf.fit(tfVectors)
+tfIdfVectors = idfModel.transform(tfVectors)
+```
+
+**1. 缩放**
+
+大多数机器学习算法都要考虑特征向量中各元素的幅值，并且在特征缩放调整为平等对待 时表现得最好(例如所有的特征平均值为 0，标准差为 1)。
+
+**例 11-9:在 Python 中缩放向量**
+
+```python
+from pyspark.mllib.feature import StandardScaler
+
+vectors = [Vectors.dense([-2.0, 5.0, 1.0]), Vectors.dense([2.0, 0.0, 1.0])]
+dataset = sc.parallelize(vectors)
+scaler = StandardScaler(withMean=True, withStd=True)
+model = scaler.fit(dataset)
+result = model.transform(dataset)
+# 结果:{[-0.7071, 0.7071, 0.0], [0.7071, -0.7071, 0.0]}
+```
+
+**2. 正规化**
+
+在一些情况下，在准备输入数据时，把向量正规化为长度 1 也是有用的。使用 Normalizer 类可以实现，只要使用 Normalizer.transform(rdd) 就可以了。默认情况下，Normalizer 使 用 $L^2$ 范式(也就是欧几里得距离)，不过你可以给 Normalizer 传递一个参数 *p* 来使用$L^p$范式。
+
+**3. word2Vec**
+
+Word2Vec是一个基于神经网络的文本特征化算法， 可以用来将数据传给许多下游算法。Spark 在 mllib.feature.Word2Vec 类中引入了该算法的一个实现。
+
+要训练 Word2Vec，需要传给它一个用 String 类的 Iterable 表示 的语料库。和前面的“TF-IDF”一节所讲的很像，Word2Vec 也推荐对单词进行正规化处 理(例如全部转为小写、去除标点和数字)。
+
+### 11.5.2  统计
+
+不论是在即时的探索中，还是在机器学习的数据理解中，基本的统计都是数据分析的重要 部分。MLlib 通过 mllib.stat.Statistics 类中的方法提供了几种广泛使用的统计函数，这 些函数可以直接在 RDD 上使用。一些常用的函数如下所列。
+
+- Statistics.colStats(RDD)：计算由向量组成的 RDD 的统计性综述，保存着向量集合中每列的最小值、最大值、平均值和方差。
+- Statistics.corr(rdd, model)：计算由向量组成的 RDD 中的列间的相关矩阵，使用皮尔森相关(Pearson correlation) 或斯皮尔曼相关(Spearman correlation)中的一种(*method* 必须是 pearson 或 spearman 中的一个)。
+- Statistic.chiSqTes(rdd)：计算由 LabeledPoint 对象组成的 RDD 中每个特征与标签的皮尔森独立性测试(Pearson’s independence test) 结 果。 返 回 一 个 ChiSqTestResult 对 象， 其 中 有 p 值 (p-value)、测试统计及每个特征的自由度。标签和特征值必须是分类的(即离散值)。
+
+除了这些算法以外，数值 RDD 还提供几个基本的统计函数，例如 mean()、stdev() 以及 sum()， 6.6 节中有所提及。除此以外，RDD 还支持 sample() 和 sampleByKey()，使 用它们可以构建出简单而分层的数据样本。
+
+### 11.5.3 分类与回归
+
+分类与回归是监督学习的两种主要方式。分类与回归是监督式学习的两种主要形式。监督式学习指算法尝试使用有标签的训练数据 (也就是已知结果的数据点)根据对象的特征预测结果。分类和回归的区别在于预测的变量的类型：在分类中，预测出的变量是离散的(也就是一个在有限集中的值，叫作类别); 比如，分类可能是将邮件分为垃圾邮件和非垃圾邮件，也有可能是文本所使用的语言。在 回归中，预测出的变量是连续的(例如根据年龄和体重预测一个人的身高)。
+
+分类和回归都会使用 MLlib 中的 LabeledPoint 类。一个LabeledPoint类就是由一个label和一个feature向量组成。
+
+**注意：**对于二元分类，MLlib 预期的标签为 0 或 1。在某些情况下可能会使用 -1 和 1，但这会导致错误的结果。对于多元分类，MLlib 预期标签范围是从 0 到 *C*-1，其中 *C* 表示类别数量。
+
+MLlib 包含多种分类与回归的算法，其中包括简单的线性算法以及决策树和森林算法。
+
+**1. 线性回归**
+
+线性回归是回归中最常用的方法之一，是指用特征的线性组合来预测输出值。MLlib 也支持$L^1$和的$L^2$正则的回归，通常称为 Lasso 和 ridge 回归。
+
+线性回归算法可以使用的类包括 mllib.regression.LinearRegressionWithSGD、LassoWithSGD 以及 RidgeRegressionWithSGD。这遵循了 MLlib 中常用的命名模式，即对于涉及多个算法的 问题，在类名中使用“With”来表明所使用的算法。这里，SGD 代表的是随机梯度下降法。
+
+这些类都有几个可以用来对算法进行调优的参数。
+
+- numIterations 要运行的迭代次数(默认值:100)。
+- stepSize 梯度下降的步长(默认值:1.0)。
+- intercept 是否给数据加上一个干扰特征或者偏差特征——也就是一个值始终为 1 的特征(默认 值:false)。
+- regParam Lasso 和 ridge 的正规化参数(默认值:1.0)。
+
+**例 11-10:Python 中的线性回归**
+
+```python
+from pyspark.mllib.regression import LabeledPoint
+from pyspark.mllib.regression import LinearRegressionWithSGD
+points = # (创建LabeledPoint组成的RDD)
+model = LinearRegressionWithSGD.train(points, iterations=200, intercept=True) 
+print("weights: %s, intercept: %s" % (model.weights, model.intercept))
+```
+
+**例 11-11:Scala 中的线性回归**
+
+```scala
+import org.apache.spark.mllib.regression.LabeledPoint
+import org.apache.spark.mllib.regression.LinearRegressionWithSGD
+val points: RDD[LabeledPoint] = // ...
+val lr = new LinearRegressionWithSGD().setNumIterations(200).setIntercept(true)
+val model = lr.run(points)
+println("weights: %s, intercept: %s".format(model.weights, model.intercept))
+```
+
+**例 11-12:Java 中的线性回归**
+
+```java
+import org.apache.spark.mllib.regression.LabeledPoint;
+import org.apache.spark.mllib.regression.LinearRegressionWithSGD;
+import org.apache.spark.mllib.regression.LinearRegressionModel;
+JavaRDD<LabeledPoint> points = // ...
+LinearRegressionWithSGD lr = new 					LinearRegressionWithSGD().setNumIterations(200).setIntercept(true);
+// 需要通过调用 .rdd() 方法把 JavaRDD 转为 Scala 中的 RDD 类
+LinearRegressionModel model = lr.run(points.rdd());
+System.out.printf("weights: %s, intercept: %s\n", model.weights(), model.intercept());
+```
+
+**2. 逻辑回归**
+
+逻辑回归是一种二元分类方法，用来寻找一个分隔阴性和阳性示例的线性分割平面。在 MLlib 中，它接收一组标签为 0 或 1 的 LabeledPoint，返回可以预测新点的分类的 LogisticRegressionModel 对象。有两 种可以用来解决逻辑回归问题的算法:SGD 和 LBFGS5。LBFGS 一般是最好的选择。
+
+**3. 支持向量机**
+
+支持向量机(简称 SVM)算法是另一种使用线性分割平面的二元分类算法，同样只预期 0 或 者 1 的标签。通过 SVMWithSGD 类，我们可以访问这种算法，它的参数与线性回归和逻辑回归 的参数差不多。返回的 SVMModel 与 LogisticRegressionModel 一样使用阈值的方式进行预测。
+
+**4. 朴素贝叶斯**
+
+朴素贝叶斯(Naive Bayes)算法是一种多元分类算法，它使用基于特征的线性函数计算将 一个点分到各类中的得分。这种算法通常用于使用 TF-IDF 特征的文本分类，以及其他一 些应用。MLlib 实现了多项朴素贝叶斯算法，需要非负的频次(比如词频)作为输入特征。
+
+在 MLlib 中，你可以通过 mllib.classification.NaiveBayes 类来使用朴素贝叶斯算法。它支 持一个参数 lambda(Python 中是 lambda_)，用来进行平滑化。你可以对一个由 LabeledPoint 组成的 RDD 调用朴素贝叶斯算法，对于 *C* 个分类，标签值范围在 0 至 *C*-1 之间。
+
+返回的 NaiveBayesModel 可以使用 predict() 预测对某点最合适的分类，也可以访问训练好的模型的两个参数:各特征与各分类的可能性矩阵 theta(对于 *C* 个分类和 *D* 个特 征的情况，矩阵大小为 *C* × *D*)，以及表示先验概率的 *C* 维向量 pi。
+
+**5. 决策树与随机森林**
+
+决策树是一个灵活的模型，可以用来进行分类，也可以用来进行回归。决策树以节点树的 形式表示，每个节点基于数据的特征作出一个二元决定(比如，这个人的年龄是否大于 20 ?)，而树的每个叶节点则包含一种预测结果(例如，这个人是不是会买一个产品?)。 决策树的吸引力在于模型本身容易检查，而且决策树既支持分类的特征，也支持连续的特 征。图 11-2 展示了一个决策树的示例。
+
+![](./img/11-2.jpg)
+
+​												**图 11-2:一个预测用户是否会购买一件产品的决策树示例**
+
+在 MLlib 中，你可以使用 mllib.tree.DecisionTree 类中的静态方法 trainClassifier() 和 trainRegressor() 来训练决策树。和其他有些算法不同的是，Java 和 Scala 的 API 也使用 静态方法，而不使用 setter 方法定制的 DecisionTree 对象。该训练方法接收如下所列参数。
+
+- data 由LabeledPoint组成RDD
+- numClasses(仅用于分类时)要使用的类别数量
+- maxDepth 树的最大深度(默认值：5)
+- maxBins 在构建各节点时将数据分到多少个箱子中(推荐值：32)
+- categoricalFeaturesInfo 一个映射表，用来指定哪些特征是分类的，以及它们各有多少个分类。例如，如果特征 1 是一个标签为 0 或 1 的二元特征，特征 2 是一个标签为 0、1 或 2 的三元特征，你就 应该传递 {1: 2, 2: 3}。如果没有特征是分类的，就传递一个空的映射表。
+
+RandomForest 类，可以用 来构建一组树的组合，也被称为随机森林。它可以通过 RandomForest.trainClassifier 和 trainRegressor 使用。除了刚才列出的每棵树对应的参数外，RandomForest 还接收如下参数。
+
+- numTrees  要构建的树的数量。提高 numTrees 可以降低对训练数据过度拟合的可能性。
+- featureSubsetStrategy 在每个节点上需要考虑的特征数量，可以是auto、all、sqrt、log2以及onethird，值越大花费的代价越大
+- seed 所使用的随机数种子
+
+### 11.5.4 聚类
+
+聚类算法是一种无监督学习任务，用于将对象分到具有高度相似性的聚类中。前面提到的监督式任务中的数据都是带标签的，而聚类可以用于无标签的数据。该算法主要用于数据 探索(查看一个新数据集是什么样子)以及异常检测(识别与任意聚类都相距较远的点)。
+
+**KMeans**
+
+MLlib 包含聚类中流行的K-means算法，以及一个叫作 K-means||的变种，可以为并行环境提供更好的初始化策略。
+
+K-means最重要的参数是生成的聚类中心的目标数量K，事实上，几乎不可能提前知 道聚类的“真实”数量，所以最佳实践是尝试几个不同的 K 值，直到聚类内部平均距离不 再显著下降为止。然而，算法一次只能接收一个 K 值。除了 K 以外，MLlib 中的 K-means 还接收以下几个参数。
+
+- initialzationMode
+
+	用来初始化聚类中心的方法，可以是“k-means||”或者“random”;k-means||(默认 值)一般会带来更好的结果，但是开销也会略高一些。
+
+- maxIterations
+
+	运行时的最大迭代次数（默认值：100）
+
+- runs
+
+	算法并发运行的数目。MLlib 的 K-means 算法支持从多个起点并发执行，然后选择最佳结果。
+
+### 11.5.4 协同过滤与推荐
+
+协同过滤是一种根据用户对各种产品的交互与评分来推荐新产品的推荐系统技术。协同过 滤吸引人的地方就在于它只需要输入一系列用户 / 产品的交互记录:无论是“显式”的交 互(例如在购物网站上进行评分)还是“隐式”的(例如用户访问了一个产品的页面但是 没有对产品评分)交互皆可。仅仅根据这些交互，协同过滤算法就能够知道哪些产品之间 比较相似(因为相同的用户与它们发生了交互)以及哪些用户之间比较相似，然后就可以作出新的推荐。
+
+**交替最小二乘**
+
+MLlib 中包含交替最小二乘(简称 ALS)的一个实现，这是一个协同过滤的常用算法，可 以很好地扩展到集群上。它位于 mllib.recommendation.ALS 类中。
+
+- rank 使用的特征向量的大小;更大的特征向量会产生更好的模型，但是也需要花费更大的计 算代价(默认值:10)。
+
+-  iterations 要执行的迭代次数(默认值:10)。
+
+- lambda 正则化参数(默认值:0.01)。
+
+- alpha用来在隐式 ALS 中计算置信度的常量(默认值:1.0)。
+- numUserBlocks，numProductBlocks 切分用户和产品数据的块的数目，用来控制并行度;你可以传递 -1 来让 MLlib 自动决 定(默认行为)。
+
