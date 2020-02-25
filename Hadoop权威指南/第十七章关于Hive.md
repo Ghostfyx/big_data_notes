@@ -275,5 +275,115 @@ Hive客户端与服务之间的联系如图17-1所示。
 
 ​																		**图17-1 Hive体系结构**
 
+### 17.3.3 MeteStore
 
+metastore是Hive元数据的集中存放池。metastore包括两部分：服务和后台数据的存储。默认情况下，metastore服务和Hive服务运行在同一个JVM中，它包含一个内嵌的以本地磁盘作为存储的Derby数据库实例，称为内嵌metastore配置(embedded metastore configuration)，如图17-2所示：
+
+![](./img/17-2.jpg)
+
+Hive metastore的三种方式：
+
+- 内嵌metastore配置：Hive入门最简单的方法，但是每次只有一个内嵌Derby数据库可以访问磁盘上的数据库文件，每次只能为每个metastore打开一个Hive会话；
+- 本地metastore配置：使用独立数据库支持多会话(多用户)，metastore服务和Hive服务仍然运行在同一个进程中，但是连接另一个进程中的数据库，在同一台机器上或远程机器上。
+- 远程metastore配置：多个metastore服务器和Hive服务运行在不同的进程中，这样，数据库可以完全设置于防火墙后，客户端不需要数据库凭据(用户名和密码)，提供了更好的可管理性和安全。
+
+任何JDBC兼容的数据库都可以通过表17-1列出的javax.jdo.option.*配置属性来供metastore使用：
+
+| 属性名称                              | 类型          | 默认值                                        | 描述                                                         |
+| ------------------------------------- | ------------- | --------------------------------------------- | ------------------------------------------------------------ |
+| Hive.metastore.warehouse.dir          | URI           | /usr/hive/warehouse                           | 相对于f s.default.name的目录，存储托管表                     |
+| Hive.metastore.uris                   | 逗号分隔的URI |                                               | 默认用当前metastore，或连接URI指定的一个或多个远程metastore服务 |
+| Javax.jdo.option.ConnectionURL        | URI           | Jdbc:derby:databaseName=mestore b;create=true | metasore数据库的JDBC URI                                     |
+| Javax.jdo.option.ConnectionDriverName | String        | org.apache.derby.jdbc.EmbeddedDriver          | JDBC驱动器类名                                               |
+| Javax.jdo.option.ConnectionUserName   | String        | APP                                           | JDBC用户名                                                   |
+| Javax.jdo.option.ConnectionPassword   | String        | mine                                          | JDBC密码                                                     |
+
+对于独立的metastore，MySQL是比较常见选择，此时属性设置为：
+
+```xml
+Javax.jdo.option.ConnectionURL=jdbc:mysql//host/dbname?createDatabaseIfNotExist=true
+Javax.jdo.option.ConnectionDriverName=com.mysql.jdbc.Driver
+Javax.jdo.option.ConnectionUserName=${mysql_usernmae}
+Javax.jdo.option.ConnectionPassword=${mysql_password}
+```
+
+将 MySQL 驱动包拷贝到 Hive 安装目录的 `lib` 目录下。
+
+## 17.4 Hive与传统数据库相比
+
+### 17.4.1 读时模式与写时模式
+
+在传统数据库中，表模式是在数据加载时强制确定的，若加载时发现数据不符合模式，则拒绝加载数据，因为数据在写入数据库时对照模式进行检查，这一设计称为**写时模式(schema on wirte)**。
+
+Hive对数据的验证不在写入时进行，而在查询时进行，称为**读时模式(schema on read)**。
+
+读时模式加载数据非常迅速，因为不需要读取数据来进行解析，再进行序列化并以数据可内部格式存入粗盘，数据加载操作仅仅是**文件的复制或移动**。
+
+写时模式有利于提升查询性能，因为数据库可以对列进行索引，并对数据进行压缩，但是加载数据时间较长。
+
+### 17.4.2 更新、事务和索引
+
+更新、事务和索引是传统数据库最重要的特性。Hive被设计为用MapReduce操作hdfs数据，全表扫描是常态操作，而表更新则是通过把数据变换后放入新表实现的。
+
+随着Hive版本迭代，现支持Inster INTO语句为表添加新的数据文件，UPDATE、DELETE更新和删除操作。HDFS不提供就地文件更新，因此插入、更新和删除操作引起的一切变化都被保存在一个较小的增量文件中，由metastore后台运行的MapReduce作业会定期将这些增量文件合并到**基表文件**中。
+
+Hive还引入表级(table-level)锁和分区级(partition-level)锁，可以防止一个进程删除另一个进程读取的表数据。默认未启用锁。
+
+Hive的索引分为两类：紧凑（compact）索引和位图（bitmap）索引：
+
+1）**紧凑索引存储每个值的hdfs块号**，因此存储不会占用很多空间，且值被聚集存储于相近行的情况，索引仍然有效
+
+2）**位图索引使用压缩的位集合来高效存储具有某个特征值的行**，这种索引适用于具有较少可能值的列。
+
+### 17.4.3 其他SQL-on-Hadoop技术
+
+针对Hive的局限性，Clousdera Impala是升级的交互式SQL引擎，Impala在性能上比基于MapReduce的是Hive要高出一个数量级。
+
+其他几个著名的开源Hive替代技术包括：FaceBook Presto、Apache Drill、Spark SQL。
+
+## 17.5 HiveQL
+
+Hive的SQL方言被称为HQL，是SQL-92、MySQL和Orale SQL语言的混合体。表17-2给出了sql与HiveQL较高层次的比较：
+
+表17-2 SQL与HiveQL的概要比较
+
+| 特性                     | sql                  | HiveQL                           |
+| ------------------------ | -------------------- | -------------------------------- |
+| 更新                     | insert update delete | insert                           |
+| 事务                     | 支持                 | 支持（表级和分区级）             |
+| 索引                     | 支持                 | 支持                             |
+| 延迟                     | 亚秒级               | 分钟级                           |
+| 函数                     | 支持                 | 支持                             |
+| 多表插入                 | 不支持               | 支持                             |
+| create table as select * | 有些支持             | 支持                             |
+| 选择                     | SQL-92               | FRom子句中只能有一个表或视图     |
+| 连接                     | SQL-92               | 内连接，外链接，半连接，映射连接 |
+| 子查询                   | 任何子句             | 只能在FROM子句中                 |
+| 视图                     | 可更新               | 只读                             |
+| 扩展点                   | 用户定义函数         | 用户定义函数                     |
+|                          | 存储过程             | MapReduce脚本                    |
+
+### 17.5.1 数据类型
+
+Hive支持原子和复杂数据类型，原子类型包括：**tinyint，smallint，int，bigint**，**float，double**，**boolean，string，binary，timestamp**；复杂类型包括：**array、map、struct**。
+
+​															**表17-3 Hive数据类型**
+
+| 大类                                    | 类型                                                         |
+| --------------------------------------- | ------------------------------------------------------------ |
+| **Integers（整型）**                    | TINYINT—1 字节的有符号整数 SMALLINT—2 字节的有符号整数 INT—4 字节的有符号整数 BIGINT—8 字节的有符号整数 |
+| **Boolean（布尔型）**                   | BOOLEAN—TRUE/FALSE                                           |
+| **Floating point numbers（浮点型）**    | FLOAT— 32位单精度浮点型 DOUBLE—64位双精度浮点型              |
+| **Fixed point numbers（定点数）**       | DECIMAL—用户自定义任意精度定点数，比如 DECIMAL(7,2)          |
+| **String types（字符串）**              | STRING—指定字符集的变长字符序列(最大2GB) VARCHAR—具有最大长度限制的字符序列 CHAR—固定长度的字符序列。 |
+| **Date and time types（日期时间类型）** | TIMESTAMP — 储存精度为纳秒级时间戳     TIMESTAMP WITH LOCAL TIME ZONE — 时间戳，纳秒精度      DATE—日期类型，包括：年月日三部分； Hive提供了在Hive时间戳、Unix时间戳、字符串之间转换的UDF |
+| **Binary types（二进制类型）**          | BINARY—变长二进制字节序列                                    |
+
+| 类型       | 描述                                                         | 示例                                   |
+| ---------- | ------------------------------------------------------------ | -------------------------------------- |
+| **STRUCT** | 类似于对象，是字段的集合，字段的类型可以不同，可以使用 `名称.字段名` 方式进行访问 | STRUCT ('xiaoming', 12 , '2018-12-12') |
+| **MAP**    | 键值对的集合，可以使用 `名称[key]` 的方式访问对应的值        | map('a', 1, 'b', 2)                    |
+| **ARRAY**  | 数组是一组具有相同类型和名称的变量的集合，可以使用 `名称[index]` 访问对应的值 | ARRAY('a', 'b', 'c', 'd')              |
+
+### 17.5.2 操作与函数
 
