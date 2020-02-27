@@ -278,7 +278,7 @@ public interface Tool extends Configurable {
 }
 ```
 
-范例6-4 Tool实现打印Configuration对象的属性
+**范例6-4 Tool实现打印Configuration对象的属性**
 
 ```java
 import org.apache.hadoop.conf.Configuration;
@@ -365,3 +365,255 @@ public class ConfigurationPrinter extends Configured implements Tool {
 ```
 
 可以看到这个 `run()`其实底层调用了 另一个`run()`方法， 但是在运行之前添加了一个`tool.getConf()`参数，这个`getConf()`方法是用于得到一个`Configuration`实例，从而传递给`run()`方法作为参数。
+
+**Tips 可以设置哪些属性**
+
+ConfigurationPrinter 可以用于了解环境中的某个属性是如何设置的。YARN网络服务器的/conf页面可以查看运行中的守护进程(如：namenode)的配置情况。
+
+Hadoop的默认配置文件在`${HADOOP_HOME}/share/doc$`目录中，包括：core-default.xml、hdfs-default.xml、yarn-default.xml和mappred-default.xml这几个文件，每个属性都有用来解释属性的作用的取值范围。
+
+**表6-1 GenericOptionsParser选项和ToolRunner选项**
+
+| 选项名称                       | 描述                                                         |
+| ------------------------------ | ------------------------------------------------------------ |
+| -D property=value              | 将指定值赋值给Hadoop配置选项，覆盖配置文件中的默认属性或站点属性，或通过-conf 选项设置的任何属性 |
+| -conf filename...              | 将制定文件条件到配置资源列表中，这里设置站点属性或同时设置一组属性的简单方法 |
+| -fs uri                        | 用指定的URI设置默认文件系统，是-D fs.default.FS=uri的快捷方式 |
+| -jt host:port                  | 用指定主机和端口号设置YARN资源管理器，是-D yarn.resourcemanager.adderss=hostname:port的快捷方式 |
+| -files file1,file2,...         | 从本地文件系统或任何指定模式的文件系统中复制指定文件到MapReduce所用文件系统，确保任务工作目录的MR程序可以访问到这些文件 |
+| -archives archive1,archive2,.. | 从本地文件系统或任何指定模式的文件系统中复制指定存档到MapReduce所用文件系统，确保任务工作目录的MR程序可以访问到这些存档 |
+| -libjars jar1,jar2,..          | 从本地文件系统或任何指定模式的文件系统中复制指定JAR文件到MapReduce所用文件系统，将其加入到MapReduce任务的类路径中，适用于传输作业需要的JAR包，也可以使用maven等打包工具将MR任务需要所有第三方JAR包打入MR任务JAR包。 |
+
+
+
+## 6.3 用MRUnit写单元测试
+
+在MapReduce中，map函数和reduce函数的独立测试非常方便，这是由函数风格决定的。MRUnit(http://incubator.apache.org/mrunit/)是一个测试库，它便于将已知的输入传递给mapper或者检查reducer的输出是否符合预期。MRUnit与标准的执行框架(如JUnit)-起使用，因此可以将MapReduce作业的测试作为正常开发环境的一部分运行。
+
+### 6.3.1 关于Mapper
+
+```java
+import java.io.IOException;
+ 
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Mapper;
+ 
+public class MaxTemperatureMapper extends Mapper<LongWritable, Text, Text, IntWritable> {
+	@Override
+	protected void map(LongWritable key, Text value, Mapper<LongWritable, Text, Text, IntWritable>.Context context)
+			throws IOException, InterruptedException {
+		String line = value.toString();
+		String year = line.substring(15, 19);
+		int airTemperature;
+ 
+		if (line.charAt(87) == '+') { // parseInt doesn't like leading plus
+										// signs
+			airTemperature = Integer.parseInt(line.substring(88, 92));
+		} else {
+			airTemperature = Integer.parseInt(line.substring(87, 92));
+		}
+ 
+		String quality = line.substring(92, 93);
+		if (airTemperature != MISSING && quality.matches("[01459]")) {
+			context.write(new Text(year), new IntWritable(airTemperature));
+		}
+	}
+ 
+	private static final int MISSING = 9999;
+}
+```
+
+使用MRUnit进行测试，首先需要创建MapDriver对象，并设置要测试的Mapper类，设定输入、期望输出。具体例子中传递一个天气记录作为mapper的输入，然后检查输出是否是读入的年份和气温。如果没有期望的输出值，MRUnit测试失败。
+
+```java
+import java.io.IOException;
+ 
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Counters;
+import org.apache.hadoop.mrunit.mapreduce.MapDriver;
+import org.junit.Test;
+ 
+import com.jliu.mr.intro.MaxTemperatureMapper;
+ 
+public class MaxTemperatureMapperTest {
+	@Test
+	public void testParsesValidRecord() throws IOException {
+		Text value = new Text("0043011990999991950051518004+68750+023550FM-12+0382" +
+		// ++++++++++++++++++++++++++++++year ^^^^
+				"99999V0203201N00261220001CN9999999N9-00111+99999999999");
+		// ++++++++++++++++++++++++++++++temperature ^^^^^
+		// 由于测试的mapper，所以适用MRUnit的MapDriver
+		new MapDriver<LongWritable, Text, Text, IntWritable>()
+				// 配置mapper
+				.withMapper(new MaxTemperatureMapper())
+				// 设置输入值
+				.withInput(new LongWritable(0), value)
+				// 设置期望输出：key和value
+				.withOutput(new Text("1950"), new IntWritable(-11)).runTest();
+	}
+ 
+	@Test
+	public void testParseMissingTemperature() throws IOException {
+		// 根据withOutput()被调用的次数， MapDriver能用来检查0、1或多个输出记录。
+		// 在这个测试中由于缺失的温度记录已经被过滤，保证对这种特定输入不产生任何输出
+		Text value = new Text("0043011990999991950051518004+68750+023550FM-12+0382" +
+		// ++++++++++++++++++++++++++++++Year ^^^^
+				"99999V0203201N00261220001CN9999999N9+99991+99999999999");
+		// ++++++++++++++++++++++++++++++Temperature ^^^^^
+		new MapDriver<LongWritable, Text, Text, IntWritable>()
+				.withMapper(new MaxTemperatureMapper())
+				.withInput(new LongWritable(0), value)
+				.runTest();
+	}
+}
+```
+
+### 6.3.2 关于Reducer
+
+```java
+import java.io.IOException;
+ 
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Reducer;
+ 
+public class MaxTemperatureReducer extends Reducer<Text, IntWritable, Text, IntWritable> {
+	@Override
+	protected void reduce(Text key, Iterable<IntWritable> values,
+			Reducer<Text, IntWritable, Text, IntWritable>.Context context) throws IOException, InterruptedException {
+ 
+		int maxValue = Integer.MIN_VALUE;
+		for (IntWritable value : values) {
+			maxValue = Math.max(maxValue, value.get());
+		}
+ 
+		context.write(key, new IntWritable(maxValue));
+	}
+}
+```
+
+对Reducer的测试，与Mapper类似，新建ReducerDriver
+
+``` java
+import org.apache.hadoop.mrunit.mapreduce.ReduceDriver;
+import java.io.IOException;
+import java.util.Arrays;
+import org.apache.hadoop.io.*;
+import org.junit.Test;
+ 
+import com.jliu.mr.intro.MaxTemperatureReducer;
+ 
+public class MaxTemperatureReducerTest {
+	@Test
+	public void testRetrunsMaximumIntegerValues() throws IOException {
+		new ReduceDriver<Text, IntWritable, Text, IntWritable>()
+		//设置Reducer
+		.withReducer(new MaxTemperatureReducer())
+		//设置输入key和List
+		.withInput(new Text("1950"),  Arrays.asList(new IntWritable(10), new IntWritable(5)))
+		//设置期望输出
+		.withOutput(new Text("1950"), new IntWritable(10))
+		//运行测试
+		.runTest();
+	}
+}
+```
+
+通过MRUnit框架对MapReduce测试比较简单，配合JUnit，创建MapperDriver或ReduceDriver对象，设定需要测试的类，设置输入和期望的输出，通过runTest()来运行测试例。
+
+## 6.4 本地运行测试数据
+
+现在Mapper和Reducer已经能够在受控的输入上进行工作了，下一步是创建作业驱动器程序(job driver)，然后在开发机器上使用测试数据运行。
+
+### 6.4.1 在本地作业运行器上运行作业
+
+使用Tool接口，创建MapReduce作业驱动器，寻找最高气温。
+
+**范例6-10 查找最高气温**
+
+``` java
+public class MaxTemperatureDriver extends Configured implements Tool {
+
+  @Override
+  public int run(String[] args) throws Exception {
+    if (args.length != 2) {
+      System.err.printf("Usage: %s [generic options] <input> <output>\n",
+          getClass().getSimpleName());
+      ToolRunner.printGenericCommandUsage(System.err);
+      return -1;
+    }
+    
+    Job job = new Job(getConf(), "Max temperature");
+    job.setJarByClass(getClass());
+
+    FileInputFormat.addInputPath(job, new Path(args[0]));
+    FileOutputFormat.setOutputPath(job, new Path(args[1]));
+    
+    job.setMapperClass(MaxTemperatureMapper.class);
+    job.setCombinerClass(MaxTemperatureReducer.class);
+    job.setReducerClass(MaxTemperatureReducer.class);
+
+    job.setOutputKeyClass(Text.class);
+    job.setOutputValueClass(IntWritable.class);
+    
+    return job.waitForCompletion(true) ? 0 : 1;
+  }
+  
+  public static void main(String[] args) throws Exception {
+    int exitCode = ToolRunner.run(new MaxTemperatureDriver(), args);
+    System.exit(exitCode);
+  }
+}
+```
+
+MaxTemperatureDriver实现了Tool接口，因此能够设置GenericOptionParser支持的选项。现在可以在一些本地文件上运行这个应用。Hadoop有个本地作业运行器，是在MapReduce执行引擎运行单个JVM上的MapReduce作业简化版本，为测试设计。
+
+如果mapreduce.framework.name被设置为local，则使用本地作业运行器。
+
+### 6.4.2 测试驱动程序
+
+除了灵活的配置选项，还可以插入任意Configuration来增加可测试性，来编写测试程序，利用本地作业运行器在已知的输入数据上运行作业，借此来检查输出是否满足预期。
+
+有两种方法可以实现：
+
+- 使用本地作业运行器
+
+	```java
+	@Test
+	  public void test() throws Exception {
+	    Configuration conf = new Configuration();
+	    conf.set("fs.defaultFS", "file:///");
+	    conf.set("mapreduce.framework.name", "local");
+	    conf.setInt("mapreduce.task.io.sort.mb", 1);
+	    
+	    Path input = new Path("input/ncdc/micro");
+	    Path output = new Path("output");
+	    
+	    FileSystem fs = FileSystem.getLocal(conf);
+	    fs.delete(output, true); // delete old output
+	    
+	    MaxTemperatureDriver driver = new MaxTemperatureDriver();
+	    driver.setConf(conf);
+	    
+	    int exitCode = driver.run(new String[] {
+	        input.toString(), output.toString() });
+	    assertThat(exitCode, is(0));
+	    
+	    checkOutput(conf, output);
+	  }
+	```
+
+	configuration设置了f s.defaultFs和mapreduce.framework.name使用本地文件系统和本地作业运行器。
+
+- 使用mini集群运行。Hadoop有一组测试类MiniDFSCluster、MiniMRCluster和MiniYARNCluster，它以程序的方式创建正在运行的集群，不同于本地作业运行器，它允许在整个HDFS、MapReduce和YARN机器上运行测试。Hadoop的ClusterMapReduceTestCase抽象类提供了一个编写mini集群测试的基础，setUp()和tearDown( )方法可以处理启动和停止时间中的HDFS和YARN集群细节。
+
+## 6.5 在集群上运行
+
+目前，程序已经可以在少量测试数据上正确运行，下面可以准备在Hadoop集群的完整数据集上运行了。
+
+### 6.5.1 打包作业
+
