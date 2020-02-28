@@ -387,3 +387,301 @@ Hive支持原子和复杂数据类型，原子类型包括：**tinyint，smallin
 
 ### 17.5.2 操作与函数
 
+Hive提供了普通SQL操作符，包括：关系操作符；控制判断(x is NULL)；匹配模式：(x LIKE 'a%')，算数操作符，以及逻辑操作符(如：X or Y)。
+
+Hive内置函数分为：数学和统计函数、字符串函数、日期函数(用于操作表示日期的字符串)、条件函数、聚集函数、以及处理XML的Xpath函数和JSON函数。
+
+**类型转换**
+
+原子类型数据形成一个Hive函数和操作符表达式进行隐式类型转换的层次。例如：如果一个表达式要使用INT，那么TINYINT会被转换为INT。具体转换层次结构如下图所示：任何数值类型都可以隐式转换为范围更广的类型或者文本类型(STRING、VARCHAR、CHAR)，额外注意的是：按照类型层次结构允许将 STRING 类型隐式转换为 DOUBLE 类型。
+
+![](./img/hive_type_transform.jpg)
+
+但是Hive不会进行反向转换，会返回错误，除非使用CAST操作。
+
+## 17.6 表
+
+Hive的表在逻辑上由存储的数据和表述表中数据形式的相关元数据组成。数据一般存放在HDFS中，但是也可以存放在任何Hadoop文件系统中；元数据存放在关系型数据库中。
+
+**多数据库/模式支持**
+
+很多关系型数据库提供了多个命名空间(namespace)支持，这样，用户和应用就可以被隔离到不同的数据库或模式中。Hive也提供了了命名空间的支持，使用`CREATE DATABASE dbname`、`USE dbname`、`DROP DATABASE dbname`操作命名空间。通过dbname.tablename来完全限定一张表。如果未指明数据库，则使用default数据库中的表。
+
+### 17.6.1 托管表和外部表
+
+在Hive创建表的时候，默认情况下创建**托管表(managed table)**，Hive负责管理数据，Hive将数据移入它的仓库目录(warehouse directory)。另一种选择是创建一个**外部表(external table)**，Hive到仓库目录之外的位置访问数据。
+
+这两种表的区别表现在LOAD和DROP命名的语义上：
+
+- **托管表**加载数据，将数据移至仓库目录。
+
+	```sql
+	CREARE TABLE managed_table (dummy STRING);
+	LOAD DATA INPUTPATH '/usr/tom/data.txt' INTO table managed_table;
+	```
+
+	把文件`hdfs://usr/tom/data.txt`移动到Hive的managed_table表的仓库目录中，即`hdfs://user/hive/warehouse/managed_table`。
+
+- 外部表加载数据，不会将数据移动到数据仓库目录，使用EXTERNAL关键字显示创建表。
+
+	```sql
+	CREARE EXTERNAL TABLE managed_table (dummy STRING);
+	LOAD DATA INPUTPATH '/usr/tom/data.txt' INTO table managed_table;
+	```
+
+- 托管表删除数据，元数据（metadata）和文件一起被删除。
+
+	```sql
+	DROP TABLE managed_table
+	```
+
+- 外部表仅删除元数据。
+
+**如何选择创建表的方式**
+
+多数情况下，这两种方式无太大区别，一个经验法则：如果所有的处理操作都由Hive完成，应该使用托管表；如果要使用Hive和其他工具来处理同一个数据集，应该使用外部表。普遍的做法是：**把存放在HDFS上的初始数据集作为外部表进行使用**，然后用Hive加工处理数据，将结果作为托管表存储。
+
+**Hive数据加载的数据正确性**
+
+托管表与外部表的数据加载操作实际上是文件系统的文件移动或重命名，定义时不会检查外部文件是否存在与文件内数据与Hive表元数据对应关系，如果不匹配，直到查询时才会知道。如果数据异常，未能被正确解析，则select查询未缺失字段返回空值。
+
+### 17.6.2 分区和桶
+
+Hive把表组织称分区(partition)，这是一种根据分区列(partition column，如日期)的值对表进行粗略划分的机制，使用分区可以加快数据分片(slice)的查询速度。
+
+表或分区可以进一步划分为桶(bucket)，它会为数据提供额外的结构以获得更高效的查询处理。例如：根据用户ID来划分桶，可以在用户集合的随机样本上快速计算基于用户的查询。
+
+**1. 分区**
+
+以分区常用情况为例。考虑日志文件的每条记录都包含一个时间戳，按照日期分区，同一天的记录就会被存放在同一个分区中，当处理日期相关的操作会变得非常高效，因为只需要扫描操作日期范围内的分区文件。**PS：分区不会影响大范围的执行，我们仍然可以查询跨多个分区的整个数据集**。
+
+Hive表支持多个维度分区。例如根据日期对日志进行分区外，还可以根据日志级别、国别等对每个分区进行**子分区(subpartition)** 。
+
+分区是在创建表的时候用PARTITIONED BY定义。对于上述情况，分区表创建语句：
+
+```sql
+CREATE TABLE logs(ts BIGINT, line STRING)
+PARTITIONED BY (dt STRING, country STRING)
+```
+
+在加载数据到分区表的时候，需要显式指定分区：
+
+```sql
+LOAD DATA LOCAL INPUTPATH 'input/hive/partitions/file1'
+INTO TABLE logs PARTITION(dt="2020-02-28", country="th")
+```
+
+在文件系统级别，分区只是表目录下嵌套的子目录，目录结构如下：
+
+```
+/user/hive/warehouse/logs
+|————dt=2020-02-28/
+|    |————country=th
+		 |    |————file1
+		 |    |————file2
+		 |____country=us
+		 			|____file3
+|_____dt=2020-02-29
+			|————country=th
+		 	|    |————file4
+      |____country=us
+		 			 |____file5
+```
+
+日志表有两个日期分区：2020-02-28和2020-02-29，分别对应子目录dt=2020-02-28和dt=2020-02-29；两个国家th和us，分别对应嵌套子目录：country=th和country=us，数据文件存放在底层目录中。
+
+**SHOW PARTITON**命令可以查看分区。
+
+```
+hive>show partiton
+dt=2020-02-28/country=th
+dt=2020-02-28/country=us
+dt=2020-02-29/country=th
+dt=2020-02-29/country=us
+```
+
+**注意：**PARTITONED BY子句中的列定义是表中正式的列，称为**分区列(partiton column)**，但是，数据文件并不包含这些列的值，因为它们源于目录名。
+
+**2. 桶**
+
+Hive 提供了一种更加细粒度的数据拆分方案：分桶表 (bucket Table)。把表划分成桶的主要有两个原因：
+
+**第一个原因：**分区提供了一个隔离数据和优化查询的可行方案，但是并非所有的数据集都可以形成合理的分区，分区的数量也不是越多越好，过多的分区条件可能会导致很多分区上没有数据。同时 Hive 会限制动态分区可以创建的最大分区数，用来避免过多分区文件对文件系统产生负担。
+
+第二个理由是数据采样更加高效，在处理大规模数据集时，在开发和修改查询阶段，对数据集均匀采样，在小规模数据集上开发与调试。
+
+Hive使用CLUSTERED BY子句来指定划分桶所用的列和要划分桶的个数，分桶表会将指定列的值进行哈希散列，并对 bucket（桶数量）取余，然后存储到对应的 bucket（桶）中。
+
+```sql
+CREATE TABLE bucketed_users(id INT, name STRING)
+CLUSTERED BY (id) SORTED BY(id ASC) INTO 4 BUCKETS --按照员工id散列到四个 bucket 中
+```
+
+直接使用 `Load` 语句向分桶表加载数据，数据时可以加载成功的，但是数据并不会分桶。
+
+这是由于分桶的实质是对指定字段做了 hash 散列然后存放到对应文件中，这意味着向分桶表中插入数据是必然要通过 MapReduce，且 Reducer 的数量必须等于分桶的数量。由于以上原因，分桶表的数据通常只能使用 CTAS(CREATE TABLE AS SELECT) 方式插入，因为 CTAS 操作会触发 MapReduce。加载数据步骤如下：
+
+- **设置强制分桶**
+
+	```sql
+	set hive.enforce.bucketing = true; --Hive 2.x 不需要这一步
+	```
+
+	在 Hive 0.x and 1.x 版本，必须使用设置 `hive.enforce.bucketing = true`，表示强制分桶，允许程序根据表结构自动选择正确数量的 Reducer 和 cluster by column 来进行分桶。
+
+- **CTAS导入数据**
+
+	```sql
+	INSERT INTO TABLE user_bucket SELECT *  FROM users;
+	```
+
+	可以从执行日志看到 CTAS 触发 MapReduce 操作，且 Reducer 数量和建表时候指定 bucket 数量一致：
+
+	![](./img/hive_bucket_log.jpg)
+
+bucket(桶) 本质上就是表目录下的具体文件，查看分桶文件，文件名是Hive根据Hash值创建的
+
+```sh
+hadoop fs -ls /user/hive/warehouse/user_bucket;
+
+000000_0
+000001_0
+000002_0
+000003_0
+```
+
+每个桶里包含的文件如下：
+
+```sh
+hadoop fs -cat /user/hive/warehouse/user_bucket/000000_0
+
+0 nat
+4 ann
+```
+
+使用TABLESAMPLE对表进行采样，**桶的个数从1开始计数**：
+
+```sql
+SELECT * FROM user_bucket TABLESAMPLE(BUCKET 1 OUT OF 4 ON id);
+
+0 nat
+4 ann
+```
+
+**分区表和分桶表结合使用**
+
+分区表和分桶表的本质都是将数据按照不同粒度进行拆分，从而使得在查询时候不必扫描全表，只需要扫描对应的分区或分桶，从而提升查询效率。两者可以结合起来使用，从而保证表数据在不同粒度上都能得到合理的拆分。下面是 Hive 官方给出的示例：
+
+```sql
+CREATE TABLE page_view_bucketed(
+	viewTime INT, 
+  userid BIGINT,
+  page_url STRING, 
+  referrer_url STRING,
+  ip STRING )
+PARTITIONED BY(dt STRING)
+CLUSTERED BY(userid) SORTED BY(viewTime) INTO 32 BUCKETS
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY '\001'
+COLLECTION ITEMS TERMINATED BY '\002'
+MAP KEYS TERMINATED BY '\003'
+STORED AS SEQUENCEFILE;
+```
+
+此时导入数据时需要指定分区：
+
+```sql
+INSERT OVERWRITE page_view_bucketed
+PARTITION (dt='2009-02-25')
+SELECT * FROM page_view WHERE dt='2009-02-25';
+```
+
+### 17.6.3 存储格式
+
+Hive从两个维度对表的存储进行管理，分别是**行格式(row format)**和**文件格式(file format)**，行格式指行和一行中的字读如何存储，行格式的定义由SerDe(序列化与反序列化工具)定义。
+
+当作为反序列化工具，即查询表时，SerDe将把文件中字节形式的数据行反序列化为Hive内部操作数据行使用的对象形式，使用序列化工具时，也就是执行INSERT或CTAS时，表的SerDe会把Hive的数据行内部表示形式序列化成字节流并写到输出文件中。
+
+文件格式指一行中字段容器的格式，最简单的格式是纯文本文件，也可以使用面向行和面向列的二进制格式。
+
+**1. 默认存储格式：分隔的文本**
+
+如果在创建表时，没有使用 **ROW FORMAT**或者 **STORED AS**子句，那么Hive所使用的默认格式是分隔文本，每行(line)存储一个数据行(row)。
+
+当数据存储在文本文件中，必须按照一定格式区别行和列，如使用逗号作为分隔符的 CSV 文件 (Comma-Separated Values) 或者使用制表符作为分隔值的 TSV 文件 (Tab-Separated Values)。但此时也存在一个缺点，就是正常的文件内容中也可能出现逗号或者制表符。
+
+所以 Hive 默认使用了几个平时很少出现的字符，这些字符一般不会作为内容出现在文件中。Hive 默认的行和列分隔符如下表所示。
+
+| 分隔符          | 描述                                                         |
+| --------------- | ------------------------------------------------------------ |
+| **\n**          | 对于文本文件来说，每行是一条记录，所以可以使用换行符来分割记录 |
+| **^A (Ctrl+A)** | 分割字段 (列)，在 CREATE TABLE 语句中也可以使用八进制编码 `\001` 来表示 |
+| **^B**          | 用于分割 ARRAY 或者 STRUCT 中的元素，或者用于 MAP 中键值对之间的分割， 在 CREATE TABLE 语句中也可以使用八进制编码 `\002` 表示 |
+| **^C**          | 用于 MAP 中键和值之间的分割，在 CREATE TABLE 语句中也可以使用八进制编码 `\003` 表示 |
+
+实际上Hive支持8级分隔符，分别对应ASCII编码的$1,2,\dots,8$，但是只允许重载前三个。
+
+使用示例如下：
+
+```sql
+CREATE TABLE page_view(viewTime INT, userid BIGINT)
+ ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\001'
+   COLLECTION ITEMS TERMINATED BY '\002'
+   MAP KEYS TERMINATED BY '\003'
+ STORED AS SEQUENCEFILE;
+```
+
+`create TABLE ...`等价于下面语句：
+
+```sql
+CREATE TABLE ... (...)
+ ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\001'
+   COLLECTION ITEMS TERMINATED BY '\002'
+   MAP KEYS TERMINATED BY '\003'
+   LINES TERMINATED BY '\n'
+ STORED AS TEXTFILE;
+```
+
+**Tips 嵌套数据结构的分隔符**
+
+前面对分隔符的描述对一般情况下的平面数据结构，即只包含原子数据类型的复杂数据类型是没问题的，但是对于嵌套数据类型(如：array( array()) )，嵌套的层级决定分隔符的使用。例如：对于数组嵌套数组，外层数组使用Control-B分隔符，内层则使用分隔符列表的下一个Control—C分隔符。
+
+Hive内部使用LazySimpleSerDe的SerDe来处理分隔符和面向行的MapReduce文本输入和输出格式。Lazy指的是SerDe对字段的反序列化是延迟处理的，只有在访问字段时才会进行反序列化。但是，由于文本以冗长的形式存放，所以存储结构并不紧凑。
+
+**2. 二进制序列化格式：顺序文件、Avro文件、Parquet文件、RCFile和ORCFile**
+
+二进制格式的使用方法非常简单，只需要通过CREATE TABLE语句中的SORTED AS子句做相应声明。二进制格式可以划分为两大类：面向行的格式和面向列的格式。一般来说，面向列的存储格式对与只需要访问表中一小部分列的查询比较有效；面向行的存储格式适用于同时处理一行中很多列的情况。
+
+Hive支持的文件存储格式如下表所述：
+
+| 格式             | 说明                                                         |
+| ---------------- | ------------------------------------------------------------ |
+| **TextFile**     | 存储为纯文本文件。 这是 Hive 默认的文件存储格式。这种存储方式数据不做压缩，磁盘开销大，数据解析开销大。 |
+| **SequenceFile** | SequenceFile 是 Hadoop API 提供的一种二进制文件，它将数据以<key,value>的形式序列化到文件中。这种二进制文件内部使用 Hadoop 的标准的 Writable 接口实现序列化和反序列化。它与 Hadoop API 中的 MapFile 是互相兼容的。Hive 中的 SequenceFile 继承自 Hadoop API 的 SequenceFile，不过它的 key 为空，使用 value 存放实际的值，这样是为了避免 MR 在运行 map 阶段进行额外的排序操作。 |
+| **RCFile**       | RCFile 文件格式是 FaceBook 开源的一种 Hive 的文件存储格式，首先将表分为几个行组，对每个行组内的数据按列存储，每一列的数据都是分开存储。 |
+| **ORC Files**    | ORC 是在一定程度上扩展了 RCFile，是对 RCFile 的优化。        |
+| **Avro Files**   | Avro 是一个数据序列化系统，设计用于支持大批量数据交换的应用。它的主要特点有：支持二进制序列化方式，可以便捷，快速地处理大量数据；动态语言友好，Avro 提供的机制使动态语言可以方便地处理 Avro 数据。 |
+| **Parquet**      | Parquet 是基于 Dremel 的数据模型和算法实现的，面向分析型业务的列式存储格式。它通过按列进行高效压缩和特殊的编码技术，从而在降低存储空间的同时提高了 IO 效率。 |
+
+通常在创建表的时候使用 `STORED AS` 参数指定：
+
+```sql
+CREATE TABLE page_view(viewTime INT, userid BIGINT)
+ ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\001'
+   COLLECTION ITEMS TERMINATED BY '\002'
+   MAP KEYS TERMINATED BY '\003'
+ STORED AS SEQUENCEFILE;
+```
+
+各个存储文件类型指定方式如下：
+
+- STORED AS TEXTFILE
+- STORED AS SEQUENCEFILE
+- STORED AS ORC
+- STORED AS PARQUET
+- STORED AS AVRO
+- STORED AS RCFILE
+
