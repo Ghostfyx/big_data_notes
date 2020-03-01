@@ -685,3 +685,574 @@ CREATE TABLE page_view(viewTime INT, userid BIGINT)
 - STORED AS AVRO
 - STORED AS RCFILE
 
+### 17.6.4 创建表
+
+**建表语法**
+
+```sql
+CREATE [TEMPORARY] [EXTERNAL] TABLE [IF NOT EXISTS] [db_name.]table_name     --表名
+[(col_name data_type [COMMENT col_comment],
+    ... [constraint_specification])]  --列名 列数据类型
+[COMMENT table_comment]   --表描述
+[PARTITIONED BY (col_name data_type [COMMENT col_comment], ...)]  --分区表分区规则
+[
+   CLUSTERED BY (col_name, col_name, ...) 
+   [SORTED BY (col_name [ASC|DESC], ...)] INTO num_buckets BUCKETS
+]  --分桶表分桶规则
+[SKEWED BY (col_name, col_name, ...) ON ((col_value, col_value, ...), (col_value, col_value, ...), ...)  
+   [STORED AS DIRECTORIES] 
+]  --指定倾斜列和值
+[
+   [ROW FORMAT row_format]    
+   [STORED AS file_format]
+     | STORED BY 'storage.handler.class.name' [WITH SERDEPROPERTIES (...)]  
+]  -- 指定行分隔符、存储文件格式或采用自定义存储格式
+[LOCATION hdfs_path]  -- 指定表的存储位置
+[TBLPROPERTIES (property_name=property_value, ...)]  --指定表的属性
+[AS select_statement];   --从查询结果创建表
+```
+
+**内部表**
+
+```sql
+ CREATE TABLE emp(
+    empno INT,
+    ename STRING,
+    job STRING,
+    mgr INT,
+    hiredate TIMESTAMP,
+    sal DECIMAL(7,2),
+    comm DECIMAL(7,2),
+    deptno INT)
+    ROW FORMAT DELIMITED FIELDS TERMINATED BY "\t";
+```
+
+**外部表**
+
+```sql
+CREATE EXTERNAL TABLE emp_external(
+    empno INT,
+    ename STRING,
+    job STRING,
+    mgr INT,
+    hiredate TIMESTAMP,
+    sal DECIMAL(7,2),
+    comm DECIMAL(7,2),
+    deptno INT)
+    ROW FORMAT DELIMITED FIELDS TERMINATED BY "\t"
+    LOCATION '/hive/emp_external';
+```
+
+使用 `desc format table` 命令可以查看表的详细信息。
+
+**分区表**
+
+```sql
+CREATE EXTERNAL TABLE emp_partition(
+    empno INT,
+    ename STRING,
+    job STRING,
+    mgr INT,
+    hiredate TIMESTAMP,
+    sal DECIMAL(7,2),
+    comm DECIMAL(7,2)
+    )
+    PARTITIONED BY (deptno INT)   -- 按照部门编号进行分区
+    ROW FORMAT DELIMITED FIELDS TERMINATED BY "\t"
+    LOCATION '/hive/emp_partition';
+```
+
+**分桶表**
+
+```sql
+ CREATE EXTERNAL TABLE emp_bucket(
+    empno INT,
+    ename STRING,
+    job STRING,
+    mgr INT,
+    hiredate TIMESTAMP,
+    sal DECIMAL(7,2),
+    comm DECIMAL(7,2),
+    deptno INT)
+    CLUSTERED BY(empno) SORTED BY(empno ASC) INTO 4 BUCKETS  --按照员工编号散列到四个 bucket 中
+    ROW FORMAT DELIMITED FIELDS TERMINATED BY "\t"
+    LOCATION '/hive/emp_bucket';
+```
+
+**倾斜表**
+
+通过指定一个或者多个列经常出现的值（严重偏斜），Hive 会自动将涉及到这些值的数据拆分为单独的文件。在查询时，如果涉及到倾斜值，它就直接从独立文件中获取数据，而不是扫描所有文件，这使得性能得到提升。
+
+```sql
+CREATE EXTERNAL TABLE emp_skewed(
+    empno INT,
+    ename STRING,
+    job STRING,
+    mgr INT,
+    hiredate TIMESTAMP,
+    sal DECIMAL(7,2),
+    comm DECIMAL(7,2)
+    )
+    SKEWED BY (empno) ON (66,88,100)  --指定 empno 的倾斜值 66,88,100
+    ROW FORMAT DELIMITED FIELDS TERMINATED BY "\t"
+    LOCATION '/hive/emp_skewed';   
+```
+
+**临时表**
+
+临时表仅对当前 session 可见，临时表的数据将存储在用户的暂存目录中，并在会话结束后删除。如果临时表与永久表表名相同，则对该表名的任何引用都将解析为临时表，而不是永久表。临时表还具有以下两个限制：
+
+- 不支持分区列；
+- 不支持创建索引。
+
+```sql
+CREATE TEMPORARY TABLE emp_temp(
+    empno INT,
+    ename STRING,
+    job STRING,
+    mgr INT,
+    hiredate TIMESTAMP,
+    sal DECIMAL(7,2),
+    comm DECIMAL(7,2)
+    )
+    ROW FORMAT DELIMITED FIELDS TERMINATED BY "\t";
+```
+
+### 17.6.5 导入数据
+
+导入数据有以下几种方式：
+
+- **Load Data：**通过把文件复制或移动在Hive数据仓库目录中，从而把数据导入Hive的表；
+- **INSERT：**把数据从一个Hive表填充到另一个；
+- **CTAS：**CTAS是Create TABLE...AS SELECT...的缩写，在创建表的时候使用；
+
+**1. INSTER语句**
+
+```sql
+INSERT OVERWRITE TABLE target
+SELECT column1, column2 FROM source
+```
+
+对于分区表，可以使用PARTITION子句来指明数据插入分区：
+
+```sql
+INSERT OVERWRITE TABLE TARGET
+PARTITION (dt="2020-03-01")
+SELECT column1, column2 FROM source
+```
+
+OVERWRITE关键字表示对数据的覆盖和重写。
+
+**2. 多表插入**
+
+在HiveSQL中，可以把INSERT语句倒过来，把FROM子句放在最前面：
+
+```sql
+FROM soucre
+INSERT OVERWRITE TABLE target
+SELECT col1,col2
+```
+
+ 可以在一个查询中使用多个INSERT子句，这种多表插入方法比使用多个单独INSERT语句更为高效，因为只需要扫描一遍源表就可以生成多个不相交的输出。
+
+```sql
+FROM RESOURCE2 
+INSERT OVERWRITE TABLE ststtion_by_year
+SELECT year, COUNT(DISTINCT station)
+GROUP BY year
+INSERT OVERWRITE TABLE records_by_year
+SELECT year, COUNT(1)
+GROUP BY year
+INSERT OVERWRITE TABLE goods_records_by_year
+SELECT year, COUNT(1)
+where temperture != 999 AND quality IN(0,2,4,5,6)
+GROUP BY year
+```
+
+这里只有一个源表resource2，有三个结果表存放针对源表三个不同的查询。
+
+**3. CREATE TABLE AS SELECT**
+
+新表的列定义是从SELECT子句所检索的列导出的，与target表的列数据类型一一对应。
+
+```sql
+CREATE TABLE target
+AS
+SELECT col1,col2 FROM source
+```
+
+CTAS操作是原子的，如果SELECT查询失败，则不会创建新表。
+
+**4. 复制表结构**
+
+```sql
+CREATE [TEMPORARY] [EXTERNAL] TABLE [IF NOT EXISTS] [db_name.]table_name  --创建表表名
+   LIKE existing_table_or_view_name  --被复制表的表名
+   [LOCATION hdfs_path]; --存储位置
+```
+
+示例：
+
+```sql
+CREATE TEMPORARY EXTERNAL TABLE  IF NOT EXISTS  emp_co  LIKE emp
+```
+
+### 17.6.6 表的修改
+
+由于Hive使用读时模式，所以创建表后，可以非常灵活的支持表修改。
+
+- 重命名表名：
+
+	语法：
+
+	```sql
+	ALTER TABLE table_name RENAME TO new_table_name;
+	```
+
+	示例：
+
+	```sql
+	ALERT TABLE source REMANE TO TARGET
+	```
+
+	对于内部表，更新表的元数据，并将数据目录移动到新名称所对应的目录下。外部表只更新元数据。
+
+- 修改列定义：
+
+	语法：
+
+	```sql
+	ALTER TABLE table_name [PARTITION partition_spec] CHANGE [COLUMN] col_old_name col_new_name column_type
+	  [COMMENT col_comment] [FIRST|AFTER column_name] [CASCADE|RESTRICT]
+	```
+
+	示例：
+
+	```sql
+	ALERT TABLE target ADD COLUMNS (col3, STRING)
+	
+	-- 修改字段名和类型
+	ALTER TABLE emp_temp CHANGE empno empno_new INT;
+	 
+	-- 修改字段 sal 的名称 并将其放置到 empno 字段后
+	ALTER TABLE emp_temp CHANGE sal sal_new decimal(7,2)  AFTER ename;
+	
+	-- 为字段增加注释
+	ALTER TABLE emp_temp CHANGE mgr mgr_new INT COMMENT 'this is column mgr';
+	```
+
+	新的列col3添加在已有的非分区列的后面，数据文件并没有被更新，因此原来的查询会为col3返回null，这是因为Hive不允许更新已有的记录。常见做法是创建一个定义了新列的表，然后用SELECT语句把数据填充进去。
+
+### 17.6.7 表的丢弃
+
+DROP TABLE语句删除表的数据和元数据。
+
+```sql
+DROP TABLE [IF EXISTS] table_name [PURGE]; 
+```
+
+- 内部表：不仅会删除表的元数据，同时会删除 HDFS 上的数据；
+- 外部表：只会删除表的元数据，不会删除 HDFS 上的数据；
+- 删除视图引用的表时，不会给出警告（但视图已经无效了，必须由用户删除或重新创建）。
+
+TRUNCATE TABLE语句用于删除表内所有数据，但是保留表的定义。
+
+```sql
+-- 清空整个表或表指定分区中的数据
+TRUNCATE TABLE table_name [PARTITION (partition_column = partition_col_value,  ...)];
+```
+
+### 17.6.8 其他命令
+
+ **Describe**
+
+查看数据库：
+
+```sql
+DESCRIBE|Desc DATABASE [EXTENDED] db_name;  --EXTENDED 是否显示额外属性
+```
+
+查看表：
+
+```sql
+DESCRIBE|Desc [EXTENDED|FORMATTED] table_name --FORMATTED 以友好的展现方式查看表详情
+```
+
+**查看数据库列表**
+
+```sql
+-- 语法
+SHOW (DATABASES|SCHEMAS) [LIKE 'identifier_with_wildcards'];
+
+-- 示例：
+SHOW DATABASES like 'hive*';
+```
+
+LIKE 子句允许使用正则表达式进行过滤，但是 SHOW 语句当中的 LIKE 子句只支持 `*`（通配符）和 `|`（条件或）两个符号。例如 `employees`，`emp *`，`emp * | * ees`，所有这些都将匹配名为 `employees` 的数据库。
+
+**查看表的列表**
+
+```sql
+-- 语法
+SHOW TABLES [IN database_name] ['identifier_with_wildcards'];
+
+-- 示例
+SHOW TABLES IN default;
+```
+
+**查看视图列表**
+
+```sql
+SHOW VIEWS [IN/FROM database_name] [LIKE 'pattern_with_wildcards'];   --仅支持 Hive 2.2.0 +
+```
+
+**查看表的分区列表**
+
+```sql
+SHOW PARTITIONS table_name;
+```
+
+**查看表/视图的创建语句**
+
+```sql
+SHOW CREATE TABLE ([db_name.]table_name|view_name);
+```
+
+## 17.7 查询数据
+
+### 17.7.1 单表查询
+
+**SELECT**
+
+```sql
+-- 查询表中全部数据
+SELECT * FROM emp;
+```
+
+ **WHERE**
+
+```sql
+-- 查询 10 号部门中员工编号大于 7782 的员工信息 
+SELECT * FROM emp WHERE empno > 7782 AND deptno = 10;
+```
+
+ **DISTINCT**
+
+Hive 支持使用 DISTINCT 关键字去重。
+
+```sql
+-- 查询所有工作类型
+SELECT DISTINCT job FROM emp;
+```
+
+**分区查询**
+
+分区查询 (Partition Based Queries)，可以指定某个分区或者分区范围。
+
+```sql
+-- 查询分区表中部门编号在[20,40]之间的员工
+SELECT emp_ptn.* FROM emp_ptn
+WHERE emp_ptn.deptno >= 20 AND emp_ptn.deptno <= 40;
+```
+
+**LIMIT**
+
+```sql
+-- 查询薪资最高的 5 名员工
+SELECT * FROM emp ORDER BY sal DESC LIMIT 5;
+```
+
+**GROUP BY**
+
+Hive 支持使用 GROUP BY 进行分组聚合操作。
+
+```sql
+set hive.map.aggr=true;
+
+-- 查询各个部门薪酬综合
+SELECT deptno,SUM(sal) FROM emp GROUP BY deptno;
+```
+
+`hive.map.aggr` 控制程序如何进行聚合。默认值为 false。如果设置为 true，Hive 会在 map 阶段就执行一次聚合。这可以提高聚合效率，但需要消耗更多内存。
+
+**ORDER AND SORT**
+
+可以使用 ORDER BY 或者 Sort BY 对查询结果进行排序，排序字段可以是整型也可以是字符串：如果是整型，则按照大小排序；如果是字符串，则按照字典序排序。ORDER BY 和 SORT BY 的区别如下：
+
+- 使用 ORDER BY 时会有一个 Reducer 对全部查询结果进行排序，可以保证数据的全局有序性；
+- 使用 SORT BY 时只会在每个 Reducer 中进行排序，这可以保证每个 Reducer 的输出数据是有序的，但不能保证全局有序。
+
+由于 ORDER BY 的时间可能很长，如果你设置了严格模式 (hive.mapred.mode = strict)，则其后面必须再跟一个 `limit` 子句。
+
+> 注 ：hive.mapred.mode 默认值是 nonstrict ，也就是非严格模式。
+
+```sql
+-- 查询员工工资，结果按照部门升序，按照工资降序排列
+SELECT empno, deptno, sal FROM emp ORDER BY deptno ASC, sal DESC;
+```
+
+**HAVING**
+
+可以使用 HAVING 对分组数据进行过滤。
+
+```sql
+-- 查询工资总和大于 9000 的所有部门
+SELECT deptno,SUM(sal) FROM emp GROUP BY deptno HAVING SUM(sal)>9000;
+```
+
+**DISTRIBUTE BY**
+
+默认情况下，MapReduce 程序会对 Map 输出结果的 Key 值进行散列，并均匀分发到所有 Reducer 上。如果想要把具有相同 Key 值的数据分发到同一个 Reducer 进行处理，这就需要使用 DISTRIBUTE BY 字句。
+
+需要注意的是，DISTRIBUTE BY 虽然能保证具有相同 Key 值的数据分发到同一个 Reducer，但是不能保证数据在 Reducer 上是有序的。情况如下：
+
+把以下 5 个数据发送到两个 Reducer 上进行处理：
+
+```
+k1
+k2
+k4
+k3
+k1
+```
+
+Reducer1 得到如下乱序数据：
+
+```
+k1
+k2
+k1
+```
+
+Reducer2 得到数据如下：
+
+```
+k4
+k3
+```
+
+如果想让 Reducer 上的数据时有序的，可以结合 `SORT BY` 使用 (示例如下)，或者使用下面我们将要介绍的 CLUSTER BY。
+
+```sql
+-- 将数据按照部门分发到对应的 Reducer 上处理
+SELECT empno, deptno, sal FROM emp DISTRIBUTE BY deptno SORT BY deptno ASC;
+```
+
+**CLUSTER BY**
+
+如果 `SORT BY` 和 `DISTRIBUTE BY` 指定的是相同字段，且 SORT BY 排序规则是 ASC，此时可以使用 `CLUSTER BY` 进行替换，同时 `CLUSTER BY` 可以保证数据在全局是有序的。
+
+```sql
+SELECT empno, deptno, sal FROM emp CLUSTER  BY deptno ;
+```
+
+### 17.7.2 多表联结查询
+
+Hive 支持内连接，外连接，左外连接，右外连接，笛卡尔连接，这和传统数据库中的概念是一致的，可以参见下图。
+
+**需要特别强调：**JOIN 语句的关联条件必须用 ON 指定，不能用 WHERE 指定，否则就会先做笛卡尔积，再过滤，这会导致你得不到预期的结果 (下面的演示会有说明)。
+
+![](./img/17-3.jpg)
+
+**INNER JOIN**
+
+```sql
+-- 查询员工编号为 7369 的员工的详细信息
+SELECT e.*,d.* FROM 
+emp e JOIN dept d
+ON e.deptno = d.deptno 
+WHERE empno=7369;
+
+--如果是三表或者更多表连接，语法如下
+SELECT a.val, b.val, c.val FROM a JOIN b ON (a.key = b.key1) JOIN c ON (c.key = b.key1)
+```
+
+**LEFT OUTER JOIN**
+
+LEFT OUTER JOIN 和 LEFT JOIN 是等价的。
+
+```sql
+-- 左连接
+SELECT e.*,d.*
+FROM emp e LEFT OUTER  JOIN  dept d
+ON e.deptno = d.deptno;
+```
+
+**RIGHT OUTER JOIN**
+
+```sql
+--右连接
+SELECT e.*,d.*
+FROM emp e RIGHT OUTER JOIN  dept d
+ON e.deptno = d.deptno;
+```
+
+**FULL OUTER JOIN**
+
+```sql
+SELECT e.*,d.*
+FROM emp e FULL OUTER JOIN  dept d
+ON e.deptno = d.deptno;
+```
+
+**LEFT SEMI JOIN**
+
+LEFT SEMI JOIN （左半连接）是 IN/EXISTS 子查询的一种更高效的实现。
+
+- JOIN 子句中右边的表只能在 ON 子句中设置过滤条件;
+- 查询结果只包含左边表的数据，所以只能 SELECT 左表中的列。
+
+```sql
+-- 查询在纽约办公的所有员工信息
+SELECT emp.*
+FROM emp LEFT SEMI JOIN dept 
+ON emp.deptno = dept.deptno AND dept.loc="NEW YORK";
+
+--上面的语句就等价于
+SELECT emp.* FROM emp
+WHERE emp.deptno IN (SELECT deptno FROM dept WHERE loc="NEW YORK");
+```
+
+**JOIN**
+
+笛卡尔积连接，这个连接日常的开发中可能很少遇到，且性能消耗比较大，基于这个原因，如果在严格模式下 (hive.mapred.mode = strict)，Hive 会阻止用户执行此操作。
+
+```sql
+SELECT * FROM emp JOIN dept;
+```
+
+### 17.7.3 Join优化
+
+**STREAMTABLE**
+
+在多表进行联结的时候，如果每个 ON 字句都使用到共同的列（如下面的 `b.key`），此时 Hive 会进行优化，将多表 JOIN 在同一个 map / reduce 作业上进行。同时假定查询的最后一个表（如下面的 c 表）是最大的一个表，在对每行记录进行 JOIN 操作时，它将尝试将其他的表缓存起来，然后扫描最后那个表进行计算。因此用户需要保证查询的表的大小从左到右是依次增加的。
+
+```sql
+SELECT a.val, b.val, c.val FROM a JOIN b ON (a.key = b.key) JOIN c ON (c.key = b.key)
+```
+
+用户并非需要总是把最大的表放在查询语句的最后面，Hive 提供了 `/*+ STREAMTABLE() */` 标志，用于标识最大的表，示例如下：
+
+```sql
+SELECT /*+ STREAMTABLE(d) */  e.*,d.* 
+FROM emp e JOIN dept d
+ON e.deptno = d.deptno
+WHERE job='CLERK';
+```
+
+**MAPJOIN**
+
+如果所有表中只有一张表是小表，那么 Hive 把这张小表加载到内存中。这时候程序会在 map 阶段直接拿另外一个表的数据和内存中表数据做匹配，由于在 map 就进行了 JOIN 操作，从而可以省略 reduce 过程，这样效率可以提升很多。Hive 中提供了 `/*+ MAPJOIN() */` 来标记小表，示例如下：
+
+```sql
+SELECT /*+ MAPJOIN(d) */ e.*,d.* 
+FROM emp e JOIN dept d
+ON e.deptno = d.deptno
+WHERE job='CLERK';
+```
+
+## 17.8 视图
+
+### 17.8.1 视图简介
+
+Hive 中的视图和 RDBMS 中视图的概念一致，都是一组数据的逻辑表示，本质上就是一条 SELECT 语句的结果集。视图是纯粹的逻辑对象，没有关联的存储 (Hive 3.0.0 引入的物化视图除外)，当查询引用视图时，Hive 可以将视图的定义与查询结合起来，例如将查询中的过滤器推送到视图中。
