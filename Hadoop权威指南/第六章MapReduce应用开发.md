@@ -617,3 +617,204 @@ MaxTemperatureDriver实现了Tool接口，因此能够设置GenericOptionParser�
 
 ### 6.5.1 打包作业
 
+本地作业运行器使用单JVM运行一个作业，只需要作业所需要的类都在类路径上即可。分布式环境中，作业的类必须打包成一个作业JAR文件并发送给集群，Hadoop通过搜索驱动程序的类路径自动找到该作业的JAR文件，该类路径包含`JobConf`或 `Job`的`setJarByClass()`方法中设置的类。另一种方法，如果你想通过文件路径设置一个指定的JAR文件，可以使用setJar()方法。JAR文件路径可以是本地的，也可以是一个HDFS文件路径。
+
+如果每个JAR文件都有一个作业，可以在JAR文件的manifest中指定要运行的类，如果主类不再manifest中，则必须在命令行指定。
+
+```sh
+hadoop jar \
+	xxx.jar \ # 作业JAR包
+	com.xxx.xxx.xxx # 运行主类
+```
+
+任何有依赖关系的JAR文件应该打包到作业的JAR文件的lib子目录中，资源文件也可以打包进classes子目录，这与Java Web application archive或WAR文件类似，只不过JAR文件是放在WAR文件的WEB-INF/Iib子目录下，而类则是放在WAR文件的WEB-INF/classes子目录中。
+
+#### 1. 客户端的类路径
+
+由`hadoop jar <jar>`设置的用户客户端类路径包括以下几个组成部分：
+
+- 作业的JAR文件
+- 作业JAR文件的目录中的所有JAR文件以及class目录（如果定义）
+- HADOOP_CLASSPATH定义的类路径
+
+这解释了如果在没有作业JAR(hadoop CLASSNAME）情况下使用本地作业运行器时，为什么必须设置HADOOP__CLASSPATH来指明依赖类和库。
+
+**Tips**
+
+HADOOP_CLASSPATH 是设置要运行的类的路径。否则当你用hadoop classname [args]方式运行程序时会报错，说找不到要运行的类。用hadoop jar jar_name.jar classname [args]方式运行程序时没问题。详细讲解见附录1 Hadoop classPath。
+
+#### 2. 任务的类路径
+
+在集群上(包括伪分布式)，map和reduce任务在各自的JVM上运行，它们的类路径不受`HADOOP_CLASSPATH`控制，`HADOOP_CLASSPATH`是客户端设置，并只针对驱动程序的JVM类路径进行设置。
+
+用户任务的类路径有以下几个部分组成：
+
+- 作业的JAR文件
+- 作业JAR文件的lib目录中包含的所有JAR文件以及classes目录（如果存在的话）
+- 使用-libjars选项（参见表）或DistributedCache的addFileToClassPath()方法（老版本的API)或Job（新版本的API)添加到分布式缓存的所有文件
+
+#### 3. 打包依赖
+
+给定这些不同的方法来控制客户端和类路径上的内容，也有相应的操作处理作业的库依赖：
+
+- 将库解包和重新打包进作业JAR
+- 将作业JAR和lib目录中的库打包(当前我常用的方法)
+- 保持库与作业JAR分开，并且通过HADOOP_CLASSPATH将它们添加到客户端的类路径，通过-libjars将它们添加到任务的类路径
+
+从创建的角度来看，最后使用分布式缓存的选项是最简单的，因为依赖不需要在作业的JAR中重新创建。同时，使用分布式缓存意味着在集群上更少的JAR文件转移，因为文件可能缓存在任务间的一个节点上了。
+
+#### 4. 类路径优先权
+
+用户的JAR文件被添加到客户端类路径和任务类路径的最后。如果Hadoop使用的库版本和你的代码使用的不同或不相容，在某些情况下可能会引发和Hadoop内置库的依赖冲突。需要控制任务类路径的次序，这样提交Jar 包的类能够被先提取出来。在客户端，可以通过设置环境变最HADOOP_USER_CLASSPATH_FIRST为true强制使Hadoop将用户的类路径优先放到搜索顺序中。对于任务的类路径，可以将mapreduce.job.user.classpath.first设为true。注意，设置这些选项就改变了针对Hadoop框架依赖的类（但仅仅对你的作业而言），这可能会引起作业的提交失败或者任务失败，因此请谨慎使用这些选项。
+
+### 6.5.2 启动作业
+
+为了启动作业，需要运行驱动程序，使用-conf选项来指定想要运行作业的集群（同样，也可以使用-fs和-jt选项）：
+
+```sh
+unset HADOOP_CLASSPATH
+hadoop jar hadoop-examples.jar v2.MaxTemperatureDriver \
+-conf conf/hadoop-cluster.xml \
+input/ncdc/all max-temp
+```
+
+Job上的waitForCompletion()方法启动作业并检查进展情况。如果有任何变化，就输出一行map和reduce进度总结。
+
+```sh
+14/09/12 06:38:11 INFO input.FilelnputFormat: Total input paths to process : 101
+14/09/12 06:38:11 INFO impl.YarnClientlmpl: Submitted application
+application_1410450250506_0003
+14/09/12 06:38:12 INFO mapreduce.Dob: Running job: job_1410450250S06_0003
+14/09/12 06:38:26 INFO mapneduce.Dob: map 0% reduce 0%
+14/09/12 06:45:24 INFO mapreduce.Dob: map 100% reduce 100%
+14/09/12 06:45:24 INFO mapreduce.Dob: Dob job_1410450250506_0e03 completed successfully
+14/09/12 06:45:24 INFO mapreduce.Dob: Counters: 49
+   File System Counters
+   FILE: Number of bytes read=93995   
+   FILE: Number of bytes wnitten=10273563
+   FILE: Number of read operations=0
+   FILE: Number of large read operations=0
+	 FILE: Number of write operations=0
+	 HDFS: Number of bytes read=33485855415
+	 HDFS: Number of bytes written=904
+	 HDFS: Number of read operations=327 
+	 HDFS: Number of large read operations=0 
+	 HDFS: Number of write operations=16
+3ob Counters
+     Launched map tasks=101
+     Launched reduce tasks=8
+     Data-local map tasks=101
+     Total time spent by all maps in occupied slots (ms)=5954495
+     Total time spent by all reduces in occupied slots (ms)=749B4
+     Total time spent by all map tasks (ms)=5954495
+     Total time spent by all reduce tasks (ms)=74934
+     Total vcore-seconds taken by all map tasks=5954495
+     Total vcore-seconds taken by all reduce tasks=74934
+     Total megabyte-seconds taken by all map tasks=6097402880
+     Total megabyte-seconds taken by all reduce tasks=76732416
+Map-Reduce Framework
+Map input records=1209901509
+Map output records=1143764653
+Map output bytes=10293881877
+Map output materialized bytes=14193
+Input split bytes=14140
+Combine input records=1143764772
+Combine output records=234
+Reduce input groups=100
+Reduce shuffle bytes=14193
+Reduce input records=115
+Reduce output records=100
+Spilled Records=B79
+Shuffled Maps =808
+Failed Shuffles=0
+Merged Map outputs=808
+GC time elapsed (ms)=101080
+CPU time spent (ms)=5113180
+Physical memory (bytes) snapshot=60509106176 Virtual memory (bytes) snapshot=167657209856 Total committed heap usage (bytes>=68220878848
+Shuffle Errors
+    BAD_ID=0
+    CONNECTION=0
+    IO_ERROR=0
+    WRONG_LENGTH=0
+    WRONG_MAP=0
+    WRONG_REDUCE=0
+File Input Format Counters
+    Bytes Read=33485841275
+File OutPut Format Counters
+		Bytes Read=90
+```
+
+ 输出的日志包含很多有用信息，在作业开始前，打印作业ID；作业完成后统计信息，从HDFS读取了34GB压缩文件(HDFS: Number of bytes read=33485855415)；输入数据备份成101个gzipped文件块(Launched map tasks=101)。
+
+**作业、任务与任务尝试ID**
+
+MapReduce2中，MapReduce作业ID由YARN资源管理器创建的YARN应用ID生成，一个应用ID的格式包含两个部分：**资源管理器开始时间**和唯一标识此应用的由资源管理器维护的**增量计数器**。例如：ID为application_1419459259596_0003的应用是资源管理器运行的第三个应用（0003，应用ID从1开始计数），时间戳1419459259596表示资源管理器开始时间。计数器的数字前面由0开始，以便于ID在目录列表中进行排序·然而，**计数器达到10000时，不能重新设置**，会导致应用ID更长（这些ID就不能很好地排序了）。
+
+将应用ID的application前缀替换为job前缀即可得到相应的作业ID，如job_14194592595069993。
+
+任务属于作业，任务ID是这样形成的，将作业ID的job前缀替换为task前缀，然后加上一个后缀表示是作业里的哪个任务。例如：task_1419459259596_0003_m_000003表示ID为job_1419459259596_0003的作业的第4个map任务(000003，任务ID从0开始计数）。作业的任务ID在作业初始化时产生，因此，任务ID的顺序不必是任务执行的顺序。
+
+对于失败或推测执行，任务可以执行多次，所以，为了标识任务执行的不同实例，任务尝试(task attempt）都会被指定一个唯一的ID。例如：attempt_1419459259596_0003_m_000003_0示正在运行的task_1419459259596_0003_m_000003任务的第一个尝试（0，任务尝试ID从0开始计数）。任务尝试在作业运行时根据需要分配，所以，它们的顺序代表被创建运行的先后顺序。
+
+### 6.5.3 MapReduce的Web界面
+
+Hadoop的Web界面用来浏览作业信息，对于跟踪作业运行进度、查找作业完成后的统计信息和日志非常有用。
+
+#### 1. 资源管理器界面
+
+图6-1展示了主页的截屏。"Cluster Metrics”部分给出了集群的概要信息，包括当前集群上处于运行及其他不同状态的应用的数量，集群上可用的资源数量（"Memory Total”）及节点管理器的相关信息。
+
+![](./img/6-1.jpg)
+
+​																		**图6-1 资源管理器页面**
+
+接下来的主表中列出了集群上所有曾经运行或正在运行的应用。有个搜索窗口可以用于过滤寻找所感兴趣的应用。主视图中每页可以显示100个条目，资源管理器在同一时刻能够在内存中保存近10000个已完成的应用（通过设置yarn.resourcemanager.max-completed-applications)，随后只能通过作业历史页面获取这些应用信息。注意，作业历史是永久存储的，因此也可以通过作业历史找到资源管理器以前运行过的作业。
+
+**作业历史**
+
+作业历史指已完成的MapReduce作业的事件和配置信息，不管作业是否成功执行，作业历史都将保存下来，为运行作业的用户提供有用信息。作业历史文件由MapReduce的applicationmaster存放在HDFS中，通过mapreduce.jobhistory.done-dir属性来设置存放目录。作业的历史文件会保存一周，随后被系统删除。历史日志包括作业、任务和尝试事件，所有这些信息以JSON格式存放在文件中。特定作业的历史可以通过作业历史服务器的web界面（通过资源管理器页面裢接）查看，或在命令行方法下用**mapredjob·history**（指向作业历史文件中）查看。
+
+#### 2. MapReduce作业页面
+
+单击"TrackingUI”链接进人application master的web界面（如果应用已经完成则进人历史页面）。在MapReduce中，将进人作业页面，如图6-2所示。
+
+![](./img/6-2.png)
+
+​																		 **图6-2 作业页面界面**
+
+作业运行期间，可以在作业页面监视作业进度。底部的表展示map和reduce进度。"Total”显示该作业map和reduce的总数。其他列显示的是这些任务的状态：pending(等待运行）、Running(运行中）或Complete(成功完成）。
+
+表下面的部分显示的是map或reduce任务中失败和被终止的任务尝试的总数。任务尝试(task attempt)可标记为被终止，如果它们是推测执行的副本，或它们运行的节点已结束，或它们已被用户终止。导航栏中还有许多有用的链接。例如，"Configuration"链接指向作业的统一配置文件，该文件包含了作业运行过程中生效的所有属性及属性值。如果不确定某个属性的设置值，可以通过该链接查看文件。
+
+#### 4. 获取结果
+
+一且作业完成，有许多方法可以获取结果。每个reducer产生一个输出文件，因此，在max-temp目录中会有30个部分文件（part file），命名为part-00000到00029。
+
+正如文件名所示，这些"part"文件可以认为是”文件的一部分。如果输出文件很大（本例不是这种情况），那么把文件分为多个part文件很重要，这样才能使多个reducer并行工作。通常情况下，如果文件采用这种分割形式，使用起来仍然很方便：例如作为另一个MapReduce作业的输人。
+
+在某些情况下，可以探索多个分割文件的结构来进行map端连接操作。这个作业产生的输出很少，所以很容易从HDFS中将其复制到开发机器上。hadoopfs命令的-getmerge选项在这时很有用，因为它得到了源模式指定目录下所有的文件，并将其合并为本地文件系统的一个文件：
+
+```sh
+hadoop fs -getmerge max-temp max-temp-local
+sort max-temp-local丨tail
+1991 607
+1992 605
+1993 567
+1994 568
+1995 567
+1996 561
+1997 565
+1998 568
+1999 568
+2000 558
+```
+
+因为reduce的输出分区是无序的（使用哈希分区函数的缘故），我们对输出进行排序。对MapReduce的数据做些后期处理是很常见的，把这些数据送人分析工具（例如R、电子数据表甚至关系型数据库）进行处理。
+如果输出文件比较小，另外一种获取输出的方式是使用-cat选项将输出文件打印到控制台：
+
+```sh
+hadoop fs -cat max-temp/*
+```
+
+**PS：**sort名利对文件内容排序，tail命令用于显示文件中末尾的内容。
+
