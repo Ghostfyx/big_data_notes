@@ -520,3 +520,4 @@ sqoop import \
 
 ### 15.6.4 直接导入
 
+Sqoop的架构支持它在多种可用的导入方法中进行选择，大多数数据库能使用上述基于DataDrivenDBInputFormat方法，而有些数据库提供了能够快速抽取数据的特定工具，例如：MySQL的mysqldump能够以大于JDBC的吞吐率从表中读取数据。Sqoop将这种使用外部工具的方法称为直接模式(direct mode)，
