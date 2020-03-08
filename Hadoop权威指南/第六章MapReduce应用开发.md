@@ -935,3 +935,242 @@ public class MaxTemperatureMapper
 
 YARN有日志聚合(log aggregation)服务，可以取到已完成的应用的任务日志，并将其移动到HDFS中，在那里任务日志被存储在一个容器文件中用于存档。如果服务已被启用(通过集群上讲yarn.log-aggregation-enable 设置为true)，可以通过点击任务尝试web页面中logs链接，或使用mapred job -logs命令查看任务日志。
 
+对于这些日志文件的写操作是很直观的，任何到标准输出或标准错误流的写操作都直接写到相关日志文件；在Streaming方式下，标准输出用于map或reduce的输出，所以不会出现在标准输出日志文件中。
+
+**范例6-13 输出写入到日志文件中**
+
+```java
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.mapreduce.Mapper;
+
+public class LoggingIdentityMapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT>
+  extends Mapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT> {
+  
+  private static final Log LOG = LogFactory.getLog(LoggingIdentityMapper.class);
+  
+  @Override
+  @SuppressWarnings("unchecked")
+  public void map(KEYIN key, VALUEIN value, Context context)
+      throws IOException, InterruptedException {
+    // Log to stdout file
+    System.out.println("Map key: " + key);
+    
+    // Log to syslog file
+    LOG.info("Map key: " + key);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Map value: " + value);
+    }
+    context.write((KEYOUT) key, (VALUEOUT) value);
+  }
+}
+```
+
+默认的日志级别是INFO，可以设置mapreduce.map.log.level或mapreduce .reduce.log.level开来修日志级别。例如，针对范例6-13:
+
+```sh
+hadoop jar hadoop-example.jar LoggingDriver -conf conf/hadoop-cluster.xml \
+-D mapreduce.map.log.level=DEBUG input/ncdc/sample.txt loging.txt
+```
+
+ 默认情况下，日最短在3小时后删除，可以通过yarn.nodemanager.log.retain-seconds属性来设置，如果日志聚合被激活，这个时间无效。
+
+如果调试问题中发现，问题运行在一个Hadoop命令的JVM上发生，而不是在集群上，可以通过如下调用将DEBUG级别日志发送给控制台：
+
+```sh
+HADOOP_ROOT_LOGGER=DEBUG.console hadoop fs -text /foo/bar
+```
+
+### 6.5.7 远程调试
+
+当一个任务失败且没有足够多的记录信息来判断执行错误时，可以选择使用调试器运行该任务。在集群上运行作业时，很难使用调试器，因为不知道哪个节点处理哪部分输入，所以不能在错误发生前安装调试器。可以使用如下方法：
+
+- **在本地重新产生错误**
+
+	对于特定的输入，失败的任务通常总会失败，可以通过下载导致任务失败的文件到本地运行重现问题。，这可以使用到调试器(如：Visual VM)
+
+- **使用JVM调试选项**
+
+	失败常见原因是任务JVM的Java内存溢出，可以将mapreduce.child.java.opts设为包含 
+
+	`-xx:HeapDumpOnOutOfMemoryError-XX:HeapDumpPath=/path/to/dumps`。该设置将产生一个堆存储(head dump)这样可以通过/jhat或Eclipse Memory Analyzer这样的工具来检查。
+
+- **使用任务分析**
+
+	Hadoop提供了分析作业中部分任务的机制，
+
+- **保存失败的任务文件**
+
+	将mapreduce.task.files.preserve.failedtasks设置为true来保存失败的任务文件。
+
+- **保存任务成功的中间结果文件**
+
+	将mapreduce.task.files.preserve.filepatern设置为一个正则表达式(与保留的任务ID匹配)。
+
+## 6.6 作业调优
+
+在开始对任务级别的分析或优化之前，必须仔细研究表6-3所示的检查内容。
+
+​																	**表6-3  作业优化检查表**
+
+| 范围         | 最佳实践                                                     | 更多参考信息 |
+| ------------ | ------------------------------------------------------------ | ------------ |
+| mapper数量   | mapper需要运行多长时间？如果平均只运行几秒钟，则可以看是否能用更少mapper运行更长的时间，通常是一分钟左右。时间长度取决于使用的输人格式 | 8.2.1节      |
+| reducer数量  | 检查使用的reducer数目是不是超过1个。根据经验，Reduce任务应运行5分钟左右，且能生产出至少一个数据块的数据 | 8.1.1节      |
+| comnbiner    | 作业能否充分利用combiner来减少通过shuffle传输的数据量        | 2.4.2节      |
+| 中间值的压缩 | 对map输出进行压缩几乎总能使作业执行得更快                    | 5.2.3        |
+| 自定义序列   | 如果使用自定义的Writab1e对象或自定义的comparator，则必须确保已实现RawComparator | 5.3.3        |
+| 调整shuffle  | MapReduce的shuffle过程可以对一些内存管理的参数进行调整，以弥补性能的不足 | 7.3.3        |
+
+#### 分析任务
+
+正如调试一样，对MapReduce这类分布式系统上运行的作业进行分析也有诸多挑战。Hadoop允许分析作业中的一部分任务，并且在每个任务完成时，把分析信息放到用户的机器上，以便日后使用标准分析工具进行分析。
+
+对于本地运行的作业进行分析可能稍微简单些。如果你有足够的数据运行map和reduce任务，那么对于提高mapper和reducer的性能有很大的帮助。但必须注意一些问题。本地作业运行器是一个与集群完全不同的环境，并且数据流模式也截然不同。如果MapReduce作业是I/O密集型的（很多作业都属于此类），那么优化代码的CPU性能是没有意义的。为了保证所有调整都是有效的，应该在实际集群上对比新老执行时间。这说起来容易做起来难，因为作业执行时间会随着与其他作业的资源争夺和调度器决定的任务顺序不同而发生改变。为了在这类情况下得到较短的作业执行时间，必须不断运行（改变代码或不改变代码），并检查是否有明显的改进。
+
+有些问题（如内存溢出）只能在集群上重现，在这些情况下，必须能够在发生问题的地方进行分析。
+
+#### HPROF分析工具
+
+许多配置属性可以控制分析过程，这些属性也可以通过JobConf的简便方法获取。启用分析很简单，将属性mapreduce.task.profile设置为true即可：
+
+```sh
+hadoop jar hadoop-examples.jar v4.MaxTemperatureDriver \
+    -conf conf/hadoop-cluster.xml \
+    -D mapreduce.task.profile=true \
+    input/ncdc/allmax-temp
+```
+
+上述命令正常运行作业，但是给用于启动节点管理器上的任务容器的Java命令增加了一个-agentlib参数。可以通过设置属性mapreduce.task.profile.params来精确地控制该新增参数。默认情况下使用HPROF，一个JDK自带的分析工具，虽然只有基本功能，但是能提供程序的CPU和堆使用情况等有价值的信息。
+
+分析作业中的所有任务通常没有意义，因此，默认情况下，只有那些ID为0，1，2的map任务和reduee任务将被分析。可以通过设置mapreduce.task.profile.maps和mapreduce.task.profile.reduces两个属性来指定想要分析的任务ID的范围。
+
+每个任务的分析输出和任务日志一起存放在节点管理器(node Manager)的本地日志目录的userlogs子目录下（和syslog，stdout，stderr）文件一起）。
+
+## 6.7 MapReduce工作流
+
+当处理变得非常复杂的时候，复杂性通过更多MapReduce任务，而不是更多的map和reduce函数来适应。换句话说，作为一个经验规则，考虑添加更多的jobs，而不是添加更多的复杂性给job。
+
+对于更复杂的问题，值得考虑高层语言来代替MapReduce，如Pig、Hive、Cascading、Crunch或Spark。一个显而易见的好处是，这把你从把问题翻译成MR任务的过程中解放出来，允许你精力放在本身算法上。
+
+### 6.7.1 将问题分解为MapReudce作业
+
+假如想要找出每天和每个气象站的平均最大记录温度。具体来说，要计算029070-99999气象站的平均最大每日温度，也就是说，在1月1号，我们获取到这个气象站的在1901-01-01,1902-01-01等等，直到2000-01-01的日最高气温的平均值。怎样通过MapReduce来计算这个呢？计算的分解通常自然地分成两个阶段：
+
+1. 为每一个气象站-日期对算出日最高气温。MapReduce在这个情况下就是年最高气温程序的一个变体，出了这里的键变成了气象站-日期对，而不是仅仅是年。
+
+2. 计算每个station-day-month键的每日最高气温均值。
+
+	mapper从上一个作业得到输出记录(station-date，最高气温值)，并把它转化为去除年份元素的记录（气象站-日-月份）。reducer为获取到每个气象站-日-月份键的最高气温平均值。
+
+第一阶段的输出，范例中的mean_max_daily_temp.sh脚本提供了Hadoop Streaming的一个实现：
+
+```sh
+029070-99999    19010101    0
+029070-99999    19020101    -94
+....
+```
+
+前两个字段形成键，最后一列是这个气象站当日所有气温记录中的最高气温。第二个阶段在把年份去掉之后，按照日期和月份聚合平均这些日最高值：
+
+```sh
+029070-99999    0101    -68
+```
+
+以上是上个世纪气象站029070-99999在1月1号的日最高值的平均值为-6.8摄氏度。可以在一个MR阶段完成这个计算，但是让程序员花费更多的精力。
+
+一个作业可以包含多个简单的MapReduce步骤，这样整个作业由多个可分解的，更易维护的mappers和reducers组成。22-24章的案例研究涉及到真实世界中用MR解决问题的实例，并且在每个实例中，数据处理任务是使用两个或者多个MR任务来实现的。那一章的细节对于感受怎么将处理的问题分解为MR流是非常有借鉴意义的。
+
+相对于之前做的，Mapper和Reducer完全可以进一步分解。mapper通常做的是输入格式的解析、推算（获取相应的字段）和过滤（去除不感兴趣的记录）。在前面的mapper中，一个mapper是现在所有这些函数，可以将这些分成不同的mapper并且用Hadoop的**ChainMapper**库类将它们连接成一个Mapper。结合使用ChainReducer，可以在一个MapReduce任务里运行一系列的mappers，接着是一个reducer和其他mappers的链。
+
+### 6.7.2 关于JobControl
+
+当MapReduce作业流不止一个时，问题来了：怎样安排这些任务按照顺序执行？有几种方法，其中主要考虑是否有一个线性的作业链或一个更复杂的作业有向无环图(DAG, directed acyclic graph)。
+
+对于线性链，最简单的方法就是一个接着一个任务运行，在一个任务完成之后，才开始运行另一个：
+
+```java
+JobClient.runJob(conf1);
+JobClient.runJob(conf2);
+```
+
+如果一个任务失败，runJob()方法将抛出一个IOException，所以管道中的后来的任务不会执行。根据具体应用，你可能想捕获异常，并清除前一个作业输出的中间数据。
+
+对于比线性链更复杂的情况，有库可以帮助合理安排、协调的工作流。最简单的就是org.apache.hadoop.mapred.jobcontrol包中的JobControl类。JobControl的一个实例代表一个作业的运行图。可以加入作业配置，然后告诉JobControl实例作业之间的依赖关系。在一个线程中运行JobControl时，它会根据依赖关系顺序执行这些任务。可以获得执行进程，并且在这些任务完成的时候，你可以查询所有任务的状态和相关的错误。如果一个任务失败，JobControl将不会执行依赖于它的任务。
+
+### 6.7.3 关于Apache Oozie
+
+Apache Oozie时一个运行工作流的系统，该工作流由相互依赖的作业组成。Oozie由两部分组成：一个工作流引擎，负责存储和运行不同类型的Hadoop作业(MapReduce、pig、Hive等)组成的工作流；一个coordinator引擎，负责基于预定义的调度策略及数据可用性运行工作流作业。
+
+在Oozie里，一个工作流是一个由**动作节点和控制流节点**组成的有向无环图。动作节点执行工作流任务，例如在HDFS中移动文件，运行MapReduce、Streaming、Pig或Hive作业。执行Sqoop导入，又或者是运行Shell脚本或Java应用。控制节点通过构建条件逻辑或并行执行来管理活动之间的工作流执行的情况。
+
+#### 1. 定义Oozie工作流
+
+工作流定义是用Hadoop Process Difinition Language以XML格式来写的。范例6-14，maxTemperature工作流。
+
+```xml
+<workflow-app xmlns="uri:oozie:workflow:0.1" name="max-temp-workflow">
+  <start to="max-temp-mr"/>
+  <action name="max-temp-mr">
+    <map-reduce>
+      <job-tracker>${resourceManager}</job-tracker>
+      <name-node>${nameNode}</name-node>
+      <prepare>
+        <delete path="${nameNode}/user/${wf:user()}/output"/>
+      </prepare>
+      <configuration>
+        <property>
+          <name>mapred.mapper.new-api</name>
+          <value>true</value>
+        </property>
+        <property>
+          <name>mapred.reducer.new-api</name>
+          <value>true</value>
+        </property>
+        <property>
+          <name>mapreduce.job.map.class</name>
+          <value>MaxTemperatureMapper</value>
+        </property>
+        <property>
+          <name>mapreduce.job.combine.class</name>
+          <value>MaxTemperatureReducer</value>
+        </property>
+        <property>
+          <name>mapreduce.job.reduce.class</name>
+          <value>MaxTemperatureReducer</value>
+        </property>
+        <property>
+          <name>mapreduce.job.output.key.class</name>
+          <value>org.apache.hadoop.io.Text</value>
+        </property>
+        <property>
+          <name>mapreduce.job.output.value.class</name>
+          <value>org.apache.hadoop.io.IntWritable</value>
+        </property>        
+        <property>
+          <name>mapreduce.input.fileinputformat.inputdir</name>
+          <value>/user/${wf:user()}/input/ncdc/micro</value>
+        </property>
+        <property>
+          <name>mapreduce.output.fileoutputformat.outputdir</name>
+          <value>/user/${wf:user()}/output</value>
+        </property>
+      </configuration>
+    </map-reduce>
+    <ok to="end"/>
+    <error to="fail"/>
+  </action>
+  <kill name="fail">
+    <message>MapReduce failed, error message[${wf:errorMessage(wf:lastErrorNode())}]
+    </message>
+  </kill>
+  <end name="end"/>
+</workflow-app>
+```
+
+这个工作流有三个控制流节点和一个动作节点：start、kill、end三个控制流节点，map-reduce动作节点。节点间关系如图6-4所示：
+
+![](./img/6-4.png)
+
+​															**图6-4 一个Oozie工作流转移图**
+
