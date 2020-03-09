@@ -1174,3 +1174,46 @@ Apache Oozie时一个运行工作流的系统，该工作流由相互依赖的�
 
 ​															**图6-4 一个Oozie工作流转移图**
 
+每一个工作流都必须有一个start节点和一个end节点。当工作流任务开始时，它转移到有start节点指定的节点上，当一个工作流转移到end节点时就意味着它成功完成了。如果转移到kill节点，那么就被认定失败了并且报告在工作流定义中的message元素指定的错误消息。
+
+这个工作流定义文件的大部分是指定map—reduce佛年工作，前两个元素(job-tracker和name-node)用于指定提交作业的YARN资源管理器和输入数据的namenode，两者都被参数化，使工作流的定义不受限于特定集群，更加灵活，有利于测试。
+
+可选项prepare元素在MapReduce作业之前运行，用于删除目录。
+
+configuration元素用于设定MapReduce作业，通过对Hadoop配置的名值来设置嵌套元素。
+
+#### 2. 打包和配置Oozie工作应用
+
+工作流应用由工作流定义和所有运行它所需要的资源(例如：应用JAR包)构成，应用必须遵循一个简单的目录结构：
+
+```
+max-temp-workflow/
+|--lib/
+|   |__hadoop.example.jar
+|___workflow.xml   
+```
+
+工作流定义文件workflow.xml必须在该目录的底层出现。一旦应用创建，复制到HDFS中：
+
+```sh
+hadoop fs -put hadoop-examples/target/max-temp-workflow max-temp-workflow
+```
+
+#### 3. 运行Oozie作业流
+
+```sh
+export OOZIE_HOME="http://localhost:11000/oozie"
+## 获取oozie命令
+oozie help
+## 运行工作流作业
+oozie job -config ch06-mr-dev/src/main/resources/max-temp-workflow.properties -run job ......
+```
+
+-config选项设定本地Java属性文件，它包含工作流文件的nameNode、resourceManager和oozie.wf.application.path，后者告知Oozie HDFS中工作流应用的位置。
+
+```properties
+nameNode=hdfs://localhost:8020
+resourceManager=localhost:8032
+oozie.wf.application.path=${nameNode}/user/${user.name}/max-temp-workflow
+```
+
