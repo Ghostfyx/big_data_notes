@@ -174,3 +174,108 @@ MapReduce客户端向application master轮询进度报告，如果该作业的ap
 资源管理器从备机到主机的切换是由故障转移控制器（failover controller)处理的。默认的故障转移器是自动工作的，使用Zookeeper的leader选举机制(leader election）以确保同一时刻只有一个主资源管理器。不同于HDFS高可用性（详见3.2.5节HDFS的高可用）的实现，故障转移控制器不必是一个独立的进程，为配置方便，默认情况下嵌人在资源管理器中。故障转移也可以配置为手动处理，但不建议这样。
 
 为应对资源管理器的故障转移，必须对客户和节点管理器进行配置，因为他们可能是在和两个资源管理器打交道。客户和节点管理器以轮询（round-robin）方式试图连接每一个资源管理器，直到找到主资源管理器。如果主资源管理器故障，他们将再次尝试直到备份资源管理器变成主机。
+
+## 7.3 shuffle和排序
+
+MapReduce确保每个reducer的输入都是按键排序的。系统执行排序、将map输出作为输出传入给reducer的过程称为**shuffle**。shuffle属于不断被优化和改进的代码库的一部分。
+
+### 7.3.1 Map端
+
+map函数开始产生输出时，并不是简单地将它写入到磁盘。这个过程更为复杂，它利用缓冲的方式写到内存并出于效率考虑进行预排序。图7-4展示了这个过程。
+
+![](./img/7-4.jpg)
+
+​														**图7-4 MapReduce的shuffle和排序**
+
+过程的详细说明如下：
+
+（1）客户端把输入数据源进行分片，根据分片来决定有多少个map任务。
+
+（2）每个map任务都有一个环形内存缓冲区作为用于存储任务输出。在默认情况下，缓存区的大小为100MB，可以通过`mapreduce.task.io.sort.mb`属性来调整。
+
+（3）一旦缓冲区的内容达到阈值(`mapreduce.map.sort.spill.percent`，默认为80%，或0.8)，一个后台线程便开始把内容溢写(spill)到磁盘，在溢写到磁盘的过程中，map输出继续写到缓冲区。但如果在此期间缓冲区被写满，map会被阻塞直到磁盘过程完成。溢写过程按轮询方式将缓冲区的内容到`mapreduce.cluster.local.dir`属性在作业特定子目录下的指定的目录中。
+
+（4）在写磁盘前，线程首先根据数据最终要传的reducer把数据划分成相应的分区(partition，用户也可自定义分区函数，默认的partitioner通过哈希函数来分区)。每个分区中后台线程按键进行内存中排序，如果有一个combiner函数，它就在排序后的输出上运行。行combiner函数使得map输出结果更紧凑，因此减少写到磁盘的数据和传递给reducer的数据。
+
+每次内存缓冲区达到溢出阈值时，就会新建一个溢出文件（spill file），因此，在map任务写完其最后一个输出记录后，会有几个溢写文件。在任务完成之前，溢写文件被合并成一个已分区且已排序的输出文件。配置属性是mapreduce.task.io.sort.factor控制着一次最多能合并多少流，默认值是10。
+
+如果至少存在3个溢写文件（通过`mapreduce.map.combine.minspills`属性设置）时，则combiner就会在输出文件写到磁盘之前再次运行。combiner可以在输入上反复运行，但并不影响最终结果。如果只有1个或者2个溢写文件，那么由于map输出规模减少，因此不值得调用combiner带来的开销，因此不会为该map输出再次运行combiner。
+
+将map输出写到磁盘的过程中对他进行压缩往往是一个很好的主意，因为这样写磁盘的速度更快，节约磁盘空间，并且减少传给reducer的数据量。默认输出时不压缩的，将mapreduce.map.output.compress设置为true，就可以使用此功能。使用的压缩库由mapreduce.map.output.compress.codec指定。
+
+reduer通过HTTP得到输出文件的分区。文件分区工作线程数量由任务的`mapreduce.shuffle.max.threads`属性控制，此设置针对的是每一个节点管理器，而不是针对每个map任务。默认值0将最大线程数设置为机器中处理器数量的两倍。
+
+### 7.3.2 reduce端
+
+#### 1. reducer复制
+
+map输出文件位于运行map任务的tasktracker的本地磁盘(注意，尽管map输出经常写到map tasktracker 的本地磁盘，但reduce输出并不这样)。现在，tasktracker需要为分区文件运行reduce任务。并且，reduce任务需要集群上若干个map任务的map输出作为其特殊的分区文件。每个map任务的完成时间可能不同，因此每个任务完成时，reduce任务就开始复制其输出，即reduce的复制阶段。reduce任务有少量复制线程，因此能够并行取得map输出。默认值是5个线程，可以通过修改设置`mapreduce.reduce.shuffle.parallelcopies`改变。
+
+```
+reducer如何知道要从哪台机器上取得map输入呢
+
+		map任务完成后，会使用心跳机制通知他们的application master。因此，对于指定作业，application master知道map输出和主机位置之间的映射关系。reduer中的一个线程定期询问master获取map输出主机的位置，直到获取所有输出的位置。
+
+		由于第一个reducer可能失败，因此主机并没有在第一个reducer检索到map输出时就立即从磁盘上删除文件。主机会在application master通知删除时，删除map输出，通常是在作业完成后执行(避免reducer失败后，map输出临时文件被删除，需要重新执行map任务，浪费时间和计算机资源)。
+```
+
+很小map输出会被复制到reduce的JVM的内存(由`mapreduce.reduce.shuffle.input.buffer.percent`属性控制，指定用于此用途的堆空间的百分比)，否则被复制到磁盘。当内存缓冲区达到阈值(由mapreduce.reduce.shuffle.merge.percent决定)或者达到map输出阈值（由mapreduce.reduce.merge.inmen.threshold控制），则合并后溢出写到磁盘中。
+
+如果指定combiner，则在合并期间运行它以降低写入硬盘的数据量。随着磁盘上副本增多，后台线程会将它们合并为更大的、排好序的文件。这会为后面的合并节省一些时间。注意，为了合并，压缩的map输出（通过map任务）都必须在内存中被解压缩。
+
+#### 2. reducer合并排序
+
+复制完所有map输出后，reduce任务进入排序阶段（更恰当的说法是合并阶段，因为排序是在map端进行的），这个阶段将合并map输出，维持其顺序排序。这是循环进行的。比如，如果有50个map输出，而合并因子是10(10为默认设置，由mapreduce.task.io.sort.factor属性设置，与map的合并类似)，合并将进行5趟，每趟将10个文件合并成一个文件，因此最后有5个中间文件。
+
+#### 3. reduce阶段
+
+在最后阶段，即reduce阶段，直接把数据输入reduce函数，从而省略了一次磁盘往返行程，并没有将这5个文件合并成一个已排序的文件作为最后一趟。最后的合并可以来自内存和磁盘片段。
+
+每趟合并的文件数实际上比事例中展示有所不同。目标是合并最少数量的文件以便满足于最后一趟的合并系数。因此如果有40个文件，我们并不会在四趟中每趟合并10个文件从而得到4个文件。相反，第一趟只合并4个文件，随后的三趟合并完整的10个文件。在最后一趟中，4个已合并的文件和余下的6个（未合并的）文件合计10个。如图7-5所示：
+
+<img src="./img/7-5.png" style="zoom:65%;" />
+
+
+
+​													**图7-5 通过合并因子10有效合并40个文件片段**
+
+**注意：**这并没有改变合并次数，只是一个优化措施，目的是尽量减少写入磁盘的数据量，因为最后一次总是直接合并到reduce。
+
+在reduce阶段，对已排序输出中的每个键都调用reduce函数。此阶段的输出直接写到输出文件系统，一般为HDFS（可自定义）。如果采用HDFS，由于节点管理器也运行数据节点，所以第一个块的副本将被写入到本地磁盘。
+
+### 7.3.3 配置调优
+
+通过调优shuffle过程，可以提高MapReduce性能。表7-1和7-2总结了相关设置和默认值。这些设置以作业为单位，默认值适用于常规作业。
+
+​															**表 7-1 map端的调优属性**
+
+| 属性名称                            | 类型    | 默认值       | 说明                                                         |
+| ----------------------------------- | ------- | ------------ | ------------------------------------------------------------ |
+| mapreduce.Task.io.sort.mb           | int     | 100          | 排序map输出时所使用的内存缓冲区的大小，默认100MB             |
+| mapreduce.map.sort.spill.percent    | Float   | 80           | map输出内存缓冲和用来开始磁盘溢出写过程的记录边界索引，      |
+| mapreduce.task.io.sort.factor       | int     | 10           | 排序文件时，一次最多合并的流数，这个属性也在reduce中使用，此值增加到100也很常见 |
+| mapreduce.map.combine.minspills     | int     | 3            | 运行combiner所需的最小溢出文件数                             |
+| mapreduce.map.output.compress       | boolean | false        | 是否压缩map输出                                              |
+| mapreduce.map.output.compress.codec | Class   | defaultCodec | map输出的压缩编解码器                                        |
+| Mapareduce.shuffle.max.thread       | int     | 0            | 每个节点管理器的工作线程数，用于将map输出到reducer。这个是集群设置，不能由单个作业设置。0表示使用Netty默认值，即两倍可用的处理数 |
+
+​	在map端，可以通过避免多次溢出写磁盘来获得最佳性能；一次是最佳的情况。如果能估算map输出大小，就可以合理地设置`mapreduce.task.io.sort.*`属性来尽可能减少溢出写的次数。具体而言，如果可以，就要增加mapreduce.task.io.sort.mb的值。MapReduce计数器（"SPILLED_RECORDS”参见9.1节“计数器"）计算在作业运行整个阶段中溢出写磁盘的记录数，这对于调优很有帮助。注意，这个计数器包括map和reduce两端的溢出写。
+
+在reduce端，中间数据全部驻留在内存时，获得最佳性能。默认情况下，是不可能发生的，因为所有内存一般都预留给reduce函数。但如果reduce函数的内存需求不大，把`mapreduce.reduce.merge.inmem.threshold`设置为0，把`mapreduce.reduce.input.buffer.percent`设置为1.0或一个更低的值，详见表7-2就可以提升性能。
+
+​															**表 7-2 map端的调优属性**
+
+| 属性名称                                      | 类型  | 默认值 | 说明                                                         |
+| --------------------------------------------- | ----- | ------ | ------------------------------------------------------------ |
+| mapreduce.reduce.shuffle.parallelcopies       | int   | 5      | 用于把map输出复制到reducer的线程数                           |
+| mapreduce.reduce.shuffle.maxfetchfailures     | int   | 10     | 在声明失败之前，reducer获取一个map输出所花的最大时间         |
+| mapreduce.task.io.sort.factor                 | int   | 10     | 排序文件时一次最多合并的流的数量。这个属性也在map端使用      |
+| mapreduce.reduce.shuffle.input.buffer.percent | float | 0.70   | 在shuffle的复制阶段，分配给map输出的缓冲区占堆空间的百分比   |
+| mapreduce·reduce.shuffle.merge.percent        | float | 0.66   | map输出缓冲区（由mapred.job.shuffle.input.buffer.percent定义） 的阈值使用比例，用于启动合并输出和磁盘溢出写的过程 |
+| mapreduce.reduce.merge.inmem.threshold        | int   | 1000   | 启动合并输出和磁盘溢出写过程的map输出的阈值数。0或更小的数意味着没有阈值限制，溢出写行为由mapreduce.reduce.shuffle.percent单独控制 |
+| mapreduce.reduce.input.buffer.percent         | float | 0.0    | 在reduce过程中，在内存中保存map输出的空间占整个堆空间的比例。reduce阶段开始时，内存中的map输出大小不能大于这个值。默认情况下，在reduce任务开始之前，所有map输出都合并到磁盘上，以便为reducer提供尽可能多的内存。然而，如果reducer需要的内存较少，可以增加此值来最小化访问磁盘的次数 |
+
+总的原则是给shuffle过程尽量多提供的内存空间。然而，有一个平衡问题，也就是要确保map函数和reduce函数能得到足够的内存来运行。这就是为什么写map函数和reduce函数时尽量少用内存的原因，它们不应该无限使用内存（例如，应避免在map中堆积数据）。
+
+运行map任务和reduce任务的JVM，其内存大小由`mapred.child.java.opts`属性设置。任务节点上的内存应该尽可能设置的大些，10.3.3节讨论YARN和MapReduce中的内存设置时要讲到需要考虑哪些约束条件。
+
