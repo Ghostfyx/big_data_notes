@@ -100,7 +100,7 @@ Streaming任务使用标准输入和输出流与进程（可以用任何语言�
 
 在作业期间，客户端每秒钟轮询一次application master以接收最新状态(轮询间隔通过mapreduce.client.progressmonitor.pollinterval设置)。客户端可以使用Job的getStatus方法得到一个JobStatus实例。
 
-![](./img/7-3.png)
+![](./img/7-3.jpg)
 
 ​												**图7-3 状态更新在MapReduce系统中的传递流程**
 
@@ -233,7 +233,7 @@ reducer如何知道要从哪台机器上取得map输入呢
 
 每趟合并的文件数实际上比事例中展示有所不同。目标是合并最少数量的文件以便满足于最后一趟的合并系数。因此如果有40个文件，我们并不会在四趟中每趟合并10个文件从而得到4个文件。相反，第一趟只合并4个文件，随后的三趟合并完整的10个文件。在最后一趟中，4个已合并的文件和余下的6个（未合并的）文件合计10个。如图7-5所示：
 
-<img src="./img/7-5.png" style="zoom:65%;" />
+<img src="./img/7-5.png" />
 
 
 
@@ -263,7 +263,7 @@ reducer如何知道要从哪台机器上取得map输入呢
 
 在reduce端，中间数据全部驻留在内存时，获得最佳性能。默认情况下，是不可能发生的，因为所有内存一般都预留给reduce函数。但如果reduce函数的内存需求不大，把`mapreduce.reduce.merge.inmem.threshold`设置为0，把`mapreduce.reduce.input.buffer.percent`设置为1.0或一个更低的值，详见表7-2就可以提升性能。
 
-​															**表 7-2 map端的调优属性**
+​															**表 7-2 reduce端的调优属性**
 
 | 属性名称                                      | 类型  | 默认值 | 说明                                                         |
 | --------------------------------------------- | ----- | ------ | ------------------------------------------------------------ |
@@ -279,3 +279,102 @@ reducer如何知道要从哪台机器上取得map输入呢
 
 运行map任务和reduce任务的JVM，其内存大小由`mapred.child.java.opts`属性设置。任务节点上的内存应该尽可能设置的大些，10.3.3节讨论YARN和MapReduce中的内存设置时要讲到需要考虑哪些约束条件。
 
+## 7.4 任务的执行
+
+在7.1节介绍剖析MapReduce作业运行机制时，结合整个作业的北京知道了MapReduce系统是如何执行任务的，本小节，将介绍MapReduce用户对任务执行的更多控制。
+
+### 7.4.1 任务执行环境
+
+Hadoop为map任务与reduce任务提供运行环境相关信息。例如，map任务可以知道它处理的文件名称(见8.2.1节)；map任务或reduce任务知道任务的尝试次数。表7-3中的属性可以从作业的配置信息中获得。这些属性可以从传递给Mapper或Reducer的所有方法的相关对象中获取。
+
+​															**表 7-3 任务执行环境属性**
+
+| 属性名称                 | 类型    | 说明                | 范例                             |
+| ------------------------ | ------- | ------------------- | -------------------------------- |
+| mapreduce.job.id         | String  | 作业ID              | job_202003140620_0004            |
+| mapreduce.task.id        | String  | 任务ID              | job_202003140620_0004_m_000003   |
+| mapreduce.attemp.id      | String  | 任务尝试ID          | job_202003140620_0004_m_000003_0 |
+| mapreduce.tsak.partition | Int     | 作业中任务的索引    | 3                                |
+| mapreduce.task.ismap     | Boolean | 此任务是否是map认知 | true                             |
+
+### 7.4.2 推测执行
+
+MapReduce模型将作业分解成任务，然后并行地运行任务以使作业的整体执行时间少于各个任务顺序执行的时间。这使作业执行时间对运行缓慢的任务很敏感。因为只运行一个缓慢任务会使整个作业使用的时间远远长于执行其他任务使用的时间。当一个作业由几百或几千任务组成时，出现少数**推后腿**的任务时很常见的。
+
+任务执行缓慢的原因有很多，例如：硬件老化或软件配置错误。Hadoop不会诊断或修复执行缓慢的任务，相反，在一个任务运行比预期慢的时候，它会尽量检测，并启动另一个相同的任务作为备份，这就是任务的 **推测执行(speculative execution)**。
+
+必须认识到一点：如果同时启动两个重复的任务，它们会相互竞争，导致推测执行无法工作，这对集群资源是一种浪费。相反，调度器跟踪作业中所有相同类型（map和reduce）任务的进度，并且仅仅启动运行速度明显低于平均水平的那一小部分任务的推测副本。一个任务一旦完成后，任何正在运行的重复任务都将被终止。**因此，如果原任务在推测任务前完成，推测任务就会被终止；同样，如果推测任务先完成，那么原任务就会被中止。**
+
+默认情况下，推测执行是启用的，可以基于集群或者基于每个作业，单独为map任务或reduce任务启用或禁用该功能，相关的属性如表7-4所示。
+
+​																**表7-4 推测执行的属性**
+
+| 属性名称                             | 类型    | 默认值                     | 描述                                                         |
+| ------------------------------------ | ------- | -------------------------- | ------------------------------------------------------------ |
+| mapreduce.map.speculative            | boolean | true                       | 如果任务运行变慢，该属性决定着是否要启动map任务的另外一个实例 |
+| mapreduce.reduce.speculative         | boolean | true                       | 如果任务运行变慢，该属性决定着是否要启动reduce任务的另一个实例 |
+| Yarn.app.mapreduce.am.job.speculator | class   | DefaultSpeculator          | Speculator类实现推测执行策略（只针对MapReduce 2）            |
+| Yarn.app.mapreduce.am.job.estimator  | class   | LegacyTaskRuntimeEstimator | Speculator实例使用的TaskRuntimeEstimator的实现，提供任务运行时间的估计值（只针对MapReduce 2） |
+
+**为什么要关闭推测执行？**推测执行的目的是减少作业运行时间，但这是以集群效率为代价的。在一个繁忙的集群中，推测执行会减少整体的吞吐量，因为冗余任务的执行时间会减少作业的执行时间。因此，一些集群管理员倾向于在集群上关闭此选项，而让用户根据个别作业需要而开启该功能。Hadoop老版本尤其如此，因为在调度推测任务时，会过度使用推测执行方式。
+
+对于reduce任务，关闭推测执行是有益的，因为任意重复的reduce任务都必须将取得map输出作为最先的任务，这可能会大幅度地增加集群上的网络传输。
+
+关闭推测执行的另一种情况是为了非幂等(nonidempotent)任务。然而在很多情况下，将任务写成幂等的并使用OutputCommitter来提升任务成功时输出到最后位置的速度。详情将在下一节介绍。
+
+### 7.4.3 关于OutputCommitter
+
+Hadoop MapReduce使用一个提交协议来确保作业和任务都完全成功或失败。这个行为通过对作业使用OutputCommitter实现，MapReduce API中，`OutputCommitter`由`OutputFormat`的`getOutputCommitter()`方法确定，默认值是`FileOutputCommitter`，这对基于文件的MapReduce是合适的，可定制OutputCommitter，或者在需要时自定义OutputCommitter已完成对作业或任务的特别设置或清理。
+
+OutputCommitter的API如下所示：
+
+```java
+public abstract class OutputCommitter extends org.apache.hadoop.mapreduce.OutputCommitter {
+  
+  public abstract void setupJob(JobContext jobContext) throws IOException;
+  
+  public void commitJob(JobContext jobContext) throws IOException {
+    cleanupJob(jobContext);
+  }
+  
+  public void abortJob(JobContext jobContext, int status) throws IOException {
+    cleanupJob(jobContext);
+  }
+  
+  public abstract void setupTask(TaskAttemptContext taskContext)throws IOException;
+  
+  public abstract boolean needsTaskCommit(TaskAttemptContext taskContext)throws IOException;
+  
+  public abstract void commitTask(TaskAttemptContext taskContext)throws IOException;
+  
+  public abstract void abortTask(TaskAttemptContext taskContext) throws IOException;
+}
+```
+
+`setupJoob()`方法在作业运行前调用，通常执行初始化操作。当OutputCommitter是FileOutputCommitter时，该方法创建的最终输出目录：`${mapreduce.output.fileoutputformat.outputdir}$`，并且为输出任务创建出一个临时的工作空间`_temporay`，作为最终输出目录的子目录。
+
+如果作业成功，就调用`commitJob()`方法，在默认基于文件的实现中，用于删除临时的工作空间，并在输出目录中创建`_SUCCESS`隐藏标志文件。以告知文件系统的客户端该作业成功完成了。如果作业不成功，就通过状态对象调用`abortJob()`，表示作业是否失败或终止(例如由用户终止)。默认实现中，将删除作业的临时工作空间。
+
+在任务级别，操作也是类似的。setUpTask() 方法在任务运行之前被调用，默认的实现什么也不做，因为临时目录的命名已经在任务输出时被创建了。
+
+任务的提价阶段时可选的，并通过从`needsTaskCommit()`返回的`false`值关闭它。这使得执行框架不必再为任务运行分布提交协议，也不需要`commitTask()`或`abortTask()`。当一个任务没有任何输出时，FileOutputCommitter将跳过提交阶段。
+
+如果任务成功，就调用c`ommitTask()`，在默认实现中它将临时的任务输出目录移动到最后的输出路径`${mapreduce.output.fileoutputformat.outputdir}$`。如果任务失败，执行框架调用`abortTask()`，删除临时的任务输出目录。
+
+执行框架保证特定任务在由多次尝试的情况下，只有一个任务会被提交，其他的会被取消。例如：
+
+- 第一次尝试由于某个原因失败，提交的是稍后成功的尝试；
+- 如果两个任务尝试作为推测副本同时运行，则提交先完成的，另一个被取消；
+
+#### 任务附属文件
+
+对于map任务和reduce任务的输出，常用的写方式是通过`OutputCollector`来收集健-值对，有些应用需要更灵活的输出方式，因此直接将map或reduce任务的输出文件写到分布式文件系统中。
+
+注意：要确保同一任务的多个实例不向同一个文件进行写操作。OutputCommitter协议解决了该问题。如果应用程序将附属文件导入其任务的工作中，那么成功完成的任务就会将其附属文件自动推送到输出目录，而失败任务，其附属文件则被删除。
+
+任务工作目录：
+
+- mapreduce.task.output.dir
+- FileOutputFormat.getWorkOutputPath()
+
+例如：假设一个程序用来转换图像文件格式，一种实现方法是用一个只有map任务的作业，其中每个map指定一组要转换的图像，如果map任务把任务转换后的图像写在其工作目录，在作业成功完成后，这些图像会被传到输出目录。
