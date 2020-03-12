@@ -207,3 +207,192 @@ divisBy2.count()
 
 ## 2.9 Spark完整示例
 
+这一节中，将用一个现实的例子来巩固在本章中所学到的所有内容，并逐步解释在幕后发生的事情。将用Spark 来分析美国运输统计局的一些飞行数据。 
+
+Spark 具有从大量数据源中读写数据的能力。使用与 SparkSession 关联的DataFrameReader 对象，同时指定文件格式以及我们想要指定的任何选项。示例如下：
+
+```python
+spark = SparkSession.builder.appName("simpleExample").getOrCreate()
+fightData2015 = spark.read
+				# DataFrame 的 schema（模式）进行猜测，然后根据Spark可用类型解析行中的类型
+				.options("inferSchema", "true")
+				.options("header", "true") # 指定第一行是文件的头
+        		.csv("/data/flight-data/csv/*.csv")
+```
+
+每个 DataFrames(在 Scala 和 Python中)都有一组列，其中列的数据行数不确定。行数不确定的原因是读取数据是一个 transformation 转换操作，因此是一个延迟操作。Spark只查看了几行数据，试图猜测每个列应该是什么类型。图 2-7 提供了将被读入DataFrame 的 CSV文件的示例，然后将其转换为本地数组或行列表。 
+
+![](./img/2-7.jpg)
+
+​															**图2-7  DataFrame读取csv文件**
+
+对DataFrames进行转换操作，根据 count 列对数据进行排序：
+
+```python
+flightData2015_sorted = flightData2015.sort("count")
+```
+
+当调用 sort 时，数据不会发生任何变化，因为它只是一个转换。但是，我们可以看到Spark 正在构建一个计划，通过 explain 查看计划，可以看到 spark将如何跨集群执行这个计划。 
+
+```python
+flightData2015_sorted_explain = flightData2015.sort("count").explain()
+
+== Physical Plan ==
+*(2) Sort [count#12 ASC NULLS FIRST], true, 0
++- Exchange rangepartitioning(count#12 ASC NULLS FIRST, 5)
+   +- *(1) FileScan csv [DEST_COUNTRY_NAME#10,ORIGIN_COUNTRY_NAME#11,count#12] Batched: false, Format: CSV, Location: InMemoryFileIndex[file:/opt/spark_learn_data/Spark_The_Definitive_Guide/flight_data/csv/2015-summ..., PartitionFilters: [], PushedFilters: [], ReadSchema: struct<DEST_COUNTRY_NAME:string,ORIGIN_COUNTRY_NAME:string,count:int>
+```
+
+可以从上到下阅读解释计划，顶部是最终结果，底部是数据的来源。查看每行的第一个关键字。将会看到 sort, exchange, 和 FileScan 三个关键字。因为数据排序实际上是一个宽依赖转换，因为位于不同分区中的数据行需要相互比较。
+
+默认情况下，当执行shuffle 时，Spark会输出200 个 shuffle 分区。现在设为 5，以减少来自shuffle的输出分区的数量：
+
+```python
+spark.conf.set("spark.sql.shuffle.partitions", "5")
+```
+
+图 2-9 演示了这个操作，除了逻辑转换之外，还包括物理分区计数。 
+
+![](./img/2-9.jpg)
+
+​													**图2-9 操作逻辑转换与物理分区**
+
+Spark构建的转换的逻辑计划为 DataFrame 定义了一个血统关系，以便在任何给定的时间点，Spark都知道如何通过执行之前在相同输入数据上执行的所有操作来重新计算任何分区。这是 Spark 编程模型-函数式编程的核心，当数据的转换保持不变时，相同的输入总是会导致相同的输出。 
+
+### 2.9.1 DataFrames和SQL
+
+用户可以在 SQL 或 DataFrames(在 R、Python、Scala 或 Java)中表达业务逻辑，Spark 将在实际执行代码之前将该逻辑编译成一个底层计划(在 explain 计划中看到)。使用 Spark SQL，可以将任何 DataFrame 注册为表或视图(临时表)，并使用纯SQL 查询它。在编写 SQL 查询或编写 DataFrame 代码之间没有性能差异，它们都“编译”
+到在DataFrame代码中指定的相同的底层计划。 
+
+将任何 DataFrame 转换为一个表或视图：
+
+```sql
+flightData2015.createOrReplaceTempView("flight_data_2015") 
+```
+
+```python
+flightData2015.show()
++--------------------+-------------------+-----+
+|   DEST_COUNTRY_NAME|ORIGIN_COUNTRY_NAME|count|
++--------------------+-------------------+-----+
+|       United States|            Romania|   15|
+|       United States|            Croatia|    1|
+|       United States|            Ireland|  344|
+|               Egypt|      United States|   15|
+|       United States|              India|   62|
+|       United States|          Singapore|    1|
+|       United States|            Grenada|   62|
+|          Costa Rica|      United States|  588|
+|             Senegal|      United States|   40|
+|             Moldova|      United States|    1|
+|       United States|       Sint Maarten|  325|
+|       United States|   Marshall Islands|   39|
+|              Guyana|      United States|   64|
+|               Malta|      United States|    1|
+|            Anguilla|      United States|   41|
+|             Bolivia|      United States|   30|
+|       United States|           Paraguay|    6|
+|             Algeria|      United States|    4|
+|Turks and Caicos ...|      United States|  230|
+|       United States|          Gibraltar|    1|
++--------------------+-------------------+-----+
+```
+
+对DataFrames和SQL分别执行转换操作，并查看执行计划：
+
+```python
+sqlWay = spark.sql("""
+    select DEST_COUNTRY_NAME, count(1)
+    FROM flight_data_2015
+    GROUP BY DEST_COUNTRY_NAME
+""")
+dataFramesWay = flightData2015.groupBy("DEST_COUNTRY_NAME").count()
+sqlWay.explain()
+
+== Physical Plan ==
+*(2) HashAggregate(keys=[DEST_COUNTRY_NAME#10], functions=[count(1)])
++- Exchange hashpartitioning(DEST_COUNTRY_NAME#10, 5)
+   +- *(1) HashAggregate(keys=[DEST_COUNTRY_NAME#10], functions=[partial_count(1)])
+      +- *(1) FileScan csv [DEST_COUNTRY_NAME#10] Batched: false, Format: CSV, Location: InMemoryFileIndex[file:/opt/spark_learn_data/Spark_The_Definitive_Guide/flight_data/csv/2015-summ..., PartitionFilters: [], PushedFilters: [], ReadSchema: struct<DEST_COUNTRY_NAME:string>
+
+dataFramesWay.explain()
+                            
+== Physical Plan ==
+*(2) HashAggregate(keys=[DEST_COUNTRY_NAME#10], functions=[count(1)])
++- Exchange hashpartitioning(DEST_COUNTRY_NAME#10, 5)
+   +- *(1) HashAggregate(keys=[DEST_COUNTRY_NAME#10], functions=[partial_count(1)])
+      +- *(1) FileScan csv [DEST_COUNTRY_NAME#10] Batched: false, Format: CSV, Location: InMemoryFileIndex[file:/opt/spark_learn_data/Spark_The_Definitive_Guide/flight_data/csv/2015-summ..., PartitionFilters: [], PushedFilters: [], ReadSchema: struct<DEST_COUNTRY_NAME:string>
+                         
+```
+
+从DataFrames和SQL执行计划对比结果：在编写 SQL 查询或编写 DataFrame 代码之间没有性能差异。
+
+执行一个复杂的聚合SQL：
+
+```python
+maxSql = spark.sql(""" select DEST_COUNTRY_NAME, sum(count) as destination_total FROM flight_data_2015 GROUP BY DEST_COUNTRY_NAME ORDER BY sum(count) DESC LIMIT 5""")
+
+maxSql.show()
+
++-----------------+-----------------+
+|DEST_COUNTRY_NAME|destination_total|
++-----------------+-----------------+
+|    United States|           411352|
+|           Canada|             8399|
+|           Mexico|             7140|
+|   United Kingdom|             2025|
+|            Japan|             1548|
++-----------------+-----------------+
+
+maxDataFrame=flightData2015.groupBy("DEST_COUNTRY_NAME").sum("count").withColumnRenamed("sum(count)", "destination_total").sort(desc("destination_total")).limit(5)
+
++-----------------+-----------------+
+|DEST_COUNTRY_NAME|destination_total|
++-----------------+-----------------+
+|    United States|           411352|
+|           Canada|             8399|
+|           Mexico|             7140|
+|   United Kingdom|             2025|
+|            Japan|             1548|
++-----------------+-----------------+
+
+```
+
+查看执行计划，现在有 7 个步骤可以回到源数据。
+
+```python
+maxDataFrame.explain()
+
+== Physical Plan ==
+TakeOrderedAndProject(limit=5, orderBy=[destination_total#102L DESC NULLS LAST], output=[DEST_COUNTRY_NAME#10,destination_total#102L])
++- *(2) HashAggregate(keys=[DEST_COUNTRY_NAME#10], functions=[sum(cast(count#12 as bigint))])
+   +- Exchange hashpartitioning(DEST_COUNTRY_NAME#10, 5)
+      +- *(1) HashAggregate(keys=[DEST_COUNTRY_NAME#10], functions=[partial_sum(cast(count#12 as bigint))])
+         +- *(1) FileScan csv [DEST_COUNTRY_NAME#10,count#12] Batched: false, Format: CSV, Location: InMemoryFileIndex[file:/opt/spark_learn_data/Spark_The_Definitive_Guide/flight_data/csv/2015-summ..., PartitionFilters: [], PushedFilters: [], ReadSchema: struct<DEST_COUNTRY_NAME:string,count:int>
+```
+
+图 2-10 显示了“代码”中执行的步骤。真正的执行计划(在 explain 中可见)，与图 2-10 所示不同，因为物理执行进行了优化。执行计划是一个有向无环图(DAG)的 transformation，每一个 transformation 都产生一个新的不可变的 DataFrame，通过调用一个 action操作来生成结果。 
+
+![](./img/2-10.jpg)
+
+​														**图2-10 Spark逻辑执行计划**
+
+（1）第一步是读取数据。之前定义了 DataFrame，但是，Spark 实际上并没有读取它，直到在 DataFrame 上调用了一个 action，或者从原始 DataFrame 派生出一个action。 
+
+（2）第二步是分组；当调用 groupBy，最终使用`org.apache.spark.sql.RelationalGroupedDataset`，用于 DataFrame 分组指定但需要用户指定一个聚合,才能进一步查询。
+
+（3）第三步是指定聚合。
+
+（4）第四步是简单的重命名。使用 withColumnRenamed 方法，它接受两个参数，原始列名和新的列名。此时仍然不会执行计算：这只是另一个 transformation 转换! 
+
+（5）第五步对数据进行排序。
+
+（6）第六步指定一个 limit。这只是指定在最后的 DataFrame 中返回前 5 个值，而不是返回所有数据。 
+
+（7）第七步action 操作。现在，开始真正收集 DataFrame 的结果，Spark 将返回正在执行的语言中的列表或数组。
+
+对比物流执行计划，可以看出与“概念性计划”并不相符，但所有的部分都在那里。可以看到 limit 语句以及 orderBy(在第一行中)。还可以看到我们的聚合是如何在两个阶段中发生的。
+
+## 2.10 结论
+
+本章介绍了 Apache Spark 的基本知识。我们讨论了 transformation 和 action，以及Spark 如何延迟执行 DAG的转换，以优化 DataFrames 的执行计划。还讨论了如何将数据组织成 partition 分区，为处理更复杂的转换设置 stage 阶段。
