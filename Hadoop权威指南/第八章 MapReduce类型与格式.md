@@ -534,7 +534,9 @@ public class SmallFilesToSequenceFileConverter extends Configured implements Too
             if(conf==null){
                 return -1;
             }
+            // 设置输入文件格式
             job.setInputFormatClass(WholeFileInputFormat.class);
+            // 设置输出文件格式
             job.setOutputFormatClass(SequenceFileOutputFormat.class);
             job.setOutputKeyClass(Text.class);
             job.setOutputValueClass(BytesWritable.class);
@@ -547,6 +549,7 @@ public class SmallFilesToSequenceFileConverter extends Configured implements Too
             @Override
             protected void setup(Context context) throws IOException, InterruptedException {
                 InputSplit split=context.getInputSplit();
+                // 强制转换为FileSplit，
                 Path path=((FileSplit)split).getPath();
                 filenameKey=new Text(path.toString());
             }
@@ -557,5 +560,423 @@ public class SmallFilesToSequenceFileConverter extends Configured implements Too
             }
         }
     }
+```
+
+由于输入格式是`wholeFileInputFormat`，所以mapper只需要找到文件输入分片的文件名，通过将InputSplit从context强制转换为FileSplit来实现。FileSplit包含一个可以获取文件路径的方法，路径存储在键对应的一个Text对象中，reducer的类型是相同的，输出格式是`SequenceFileOutputFormat`。
+
+以下是在一些小文件上的运行样例。此处使用了两个reducer，所以生成两个输出顺序文件：
+
+```sh
+hadoop jar job.jar SmallFilesToSequenceFileConverter \
+- conf conf/hadoop-localhost.xml -D mapreduce.job.reduces=2 \
+input/smallfiles output
+```
+
+由此产生两部分文件，每一个对应一个顺序文件，可以通过文件系统shell的-text选项来进行检查：
+
+```sh
+hadoop fs -conf conf/hadoop-localhost.xml -text output/part-r-00000
+
+hdfs://localhost/user/tom/input/smallfiles/a 61 61 61 61 61 61 61 61 61 61
+hdfs://localhost/user/tom/input/smallfiles/c 63 63 63 63 63 63 63 63 63 63
+hdfs://localhost/user/tom/input/smallfiles/a 
+
+hadoop fs -conf conf/hadoop-localhost.xml -text output/part-r-00001
+
+hdfs://localhost/user/tom/input/smallfiles/b 62 62 62 62 62 62 62 62 62 62
+hdfs://localhost/user/tom/input/smallfiles/d 64 64 64 64 64 64 64 64 64 64
+hdfs://localhost/user/tom/input/smallfiles/f 66 66 66 66 66 66 66 66 66 66
+```
+
+输人文件的文件名分别是a、b、c、d、e和 f，每个文件分别包含10个相应字母（比如，a文件中包含10个"a”字母），e文件例外，它的内容为空。可以看到这些顺序文件的文本表示，文件名后跟着文件的十六进制的表示。
+
+至少有一种方法可以改进程序。前面提到，一个mapper处理一个文件的方法是低效的，所以较好的方法是继承CombineFileInputFormat而不是FileInputFormat。
+
+### 8.2.2 文本输入
+
+Hadoop非常擅长处理非结构化文本数据，本节讨论Hadoop提供的用于处理文本的不同InputFormat类。
+
+#### 1. TextInputFormat
+
+TextInputFormat是默认的InputFormat，每条记录是一行输入，键是LongWritable类型，存储该行在整个文件中的字节偏移量。值是这行的内容，不包括任何中行终止符(换行符和回车符)，它被打包成一个Text对象。所以，包含如下文本的文件被切分为包含4条记录的一个分片：
+
+```
+On the top of the Crumpetty Tree 
+The Quangle Wangle sat, 
+But his face you could not see, 
+On account of his Beaver Hat. 
+```
+
+每条记录表示为以下键值：
+
+```xml
+(0, On the top of the Crumpetty Tree) 
+(33, The Quangle Wangle sat,) 
+(57, But his face you could not see,) 
+(89, On account of his Beaver Hat. ) 
+```
+
+很明显，键并不是行号。一般情况下，很难取得行号，**因为文件按字节而不是按行切分为分片**。每个分片单独处理。行号实际上是一个顺序的标记，即每次读取一行的时候需要对行号计数。因此，在分片内知道行号是可能的，但在文件中是不可能的。
+
+然而，每一行在文件中的偏移量是可以在分片内单独确定的，而不需要知道分片的信息，因为每个分片都知道上一个分片的大小，只需要加到分片内的偏移量上，就可以获得每行在整个文件中的偏移量了。通常，对于每行需要唯一标识的应用来说，有偏移量就足够了。如果再加上文件名，那么它在整个文件系统内就是唯一的。当然，如果每一行都是定长的，那么这个偏移量除以每一行的长度即可算出行号。
+
+**输入分片与HDFS块之间的关系**
+
+FileInputFormat定义的逻辑记录有时并不能很好的匹配HDFS的文件块。例如：TextInputFormat的逻辑记录是以行为单位的。那么很有可能某一行会跨文件块存放。虽然这对程序的功能没有什么影响，如行不会丢失或出错，但这种现象应该引起注意，因为这意味着那些“本地的”map(即map运行在输入数据所在的主机上）会执行一些远程的读操作，由此而来的额外开销一般不是特别明显。
+
+图8·3展示了一个例子。一个文件分成几行，行的边界与HDFS块的边界没有对齐·分片的边界与逻辑记录的边界对齐（这里是行边界），所以第一个分片包含第5行，即使第5行跨第一块和第二块·第二个分片从第6行开始。
+
+![](./img/8-3.jpg)
+
+​											**图8-3 TextInputFormat的逻辑记录和HDFS块**
+
+#### 2. 控制一行最大的长度
+
+如果正在使用这里讨论的文本输人格式中的一种，可以为预期的行长设一个最大值，对付被损坏的文件。文件的损坏可以表现为超长行，导致内存溢出，任务失败。将mapreduce.input.linerecordreader.line.maxlength设置为用字节数表示的、在内存范围内的值(适当超过输人数据中的行长)，可以确保记录reader跳过(长的)损坏的行，不会导致任务失败。
+
+#### 3. 关于KeyVaIueTextlnputFormat
+
+TextInputFormat的键，即每一行在文件中的字节偏移量，通常不是特别有用。通常情况下，文件中的每一行是一个键-值对，使用某个分界符进行分隔，比如制表符。例如由TextOutputFormat(Hadoop默认OutputFormat)产生的输出就是这种，如果要正确处理这类文件，KeyvalueTextInputFormat比较合适。
+
+可以通过mapreduce.input.keyvaluelinerecordreader.key.value.separator属性来指定分隔符。它的默认是一个制表符。以下是一个范例，其中$\rightarrow$表示一个(水平方向的)制表符：
+
+```
+ine1->On the top of the Crumpetty Tree
+line2->The QuangIe wangle sat，
+line3->But his face you could not see，
+line4->On account of his Beaver Hat．
+```
+
+与TextInputFormat类似，输人是一个包含4条记录的分片，不过此时的键是每行排在制表符之前的Text序列：
+
+```
+(line1,On the top of the Crumpetty Tree)
+(line2,The QuangIe wangle sat，)
+(line3,But his face you could not see，)
+(line4,On account of his Beaver Hat．)
+```
+
+#### 4. 关于NLineInputFormat
+
+通过TextInputFormat和KeyValueTextInputFormat，每个Mapper收到的输入行数不同，行数取决于输入分片大小和行长度，如果希望mapper收到固定行数的输人，需要将NLineInputFormat作为lnputFormat使用。与TextInputFormat一样，键是文件中行的字节偏移量，值是行本身。
+
+N是每个Mapper收到的输入行数，默认值为1。mapreduce.input.lineinputformat.linespermap属性控制N值的设定。以刚才的4行输人为例：
+
+```
+On the top of the Crumpetty Tree
+The QuangIe Wangle sat，
+But his face you could not see，
+On account of his Beaver Hat．
+```
+
+例如，如果N是2，则每个输人分片包含两行。一个mapper收到前两行键．值对：
+
+```
+（0，On the top of the Crumpetty Tree)
+〈33，The QuangIe Wangle sat，）
+```
+
+另一个mapper则收到后两行：
+
+```
+（57，But his face you could not see,）
+（89，On account of his Beaver Hat．）
+```
+
+键和值与TextInputFormat生成的一样。不同的是输人分片的构造方法。
+
+通常来说，对少量输人行执行map任务是比较低效的（任务初始化的额外开销造成的），但有些应用程序会对少量数据做一些扩展的(即CPU密集型的)计算任务，然后产生输出。仿真是一个不错的例子。通过生成一个指定输人参数的输人文件，每行一个参数，便可以执行一个参数扫描分析（parameter sweep)：并发运行一组仿真试验，看模型是如何随参数不同而变化的。
+
+另一个例子是用Hadoop引导从多个数据源（如数据库）加载数据。创建一个“种子”输人文件，记录所有的数据源，一行一个数据源。然后每个mapper分到一个数据源，并从这些数据源中加载数据到HDFS中。这个作业不需要reduce阶段，所以reducer的数量应该被设成0（通过调用Job的setNumReduceTasks()来设置）。进而可以运行MapReduce作业处理加载到HDFS中的数据。范例参见附录C。
+
+#### 5. 关于XML
+
+大多数XML解析器会处理整个XML文档，所以如果一个大型XML文档由多个输人分片组成，那么单独解析每个分片就相当有挑战。
+
+由很多“记录”（此处是XML文档片断）组成的XML文档，可以使用简单的字符串匹配或正则表达式匹配的方法来查找记录的开始标签和结束标签，而得到很多记录。这可以解决由MapReduce框架进行分割的问题，因为一条记录的下一个开始标签可以通过简单地从分片开始处进行扫描轻松找到，就像TextInputFormat确定新行的边界一样。
+
+Hadoop提供了`StreamXmIRecordReader`类（在org.apache.hadoop.streaming.mapreduce包中，还可以在Streaming之外使用）。通过把输人格式设为`StreamInputFormat`，把`stream.recordreader.class`属性设为`org.apache.hadoop.streaming.mapreduce.StreamXmlRecordReader`来用StreamXmlRecordReader类。reader的配置方法是通过作业配置属性来设reader开始标签和结束标签。
+
+例如，维基百科用XML格式来提供大量数据内容，非常适合用MapReduce来并行处理。数据包含在一个大型的打包文档中，文档中有一些元素，例如包含每页内容和相关元数据的page元素。使用StreamXmlRecordReader后，这些page元素便可解释为一系列的记录，交由一个mapper来处理。
+
+### 8.2.3 二进制输入
+
+Hadoop的MapReduce还可以处理二进制格式的数据。
+
+#### 1. 关于SequenceFileInputFormat类
+
+Hadoop的顺序文件格式是存储二进制的健—值对的序列。由于它们是可分割的(它们有同步点，所以reader可以从文件中的任意一点与记录边界进行同步，例如分片的起点)。所以它们很符合MapReduce数据的格式要求，并且它们还支持压缩，可以使用一些序列化技术来存储任意类型。详情参见5.4.1节。
+
+如果要用顺序文件数据作为MapReduce的输人，可以使用SequenceFileInputFormat0键和值是由顺序文件决定，所以只需要保证map输人的类型匹配。例如，如果顺序文件中键的格式是lntwritable，值是Text，就像第5章中生成的那样，那么mapper的格式应该是Mapper<Intwritable,Text，K，V>，其中K和V是这个mapper输出的键和值的类型。
+
+#### 2. 关于SequenceFileAsTextlnputFormat类
+
+SequenceFileAsTextInputFormat是SequenceFileInputFormat的变体，它将顺序文件的键和值转换为Text对象。这个转换通过在键和值上调用toString()方法实现。
+
+#### 3. 关于SequenceFiIeAsBinaryInputFormat类
+
+`SequenceFileAsBinaryInputFormat`是`SequenceFileInputFormat`的一种变体，它获取顺序文件的键和值作为二进制对象。它们被封装为`BytesWritable`对象，因而应用程序可以任意解释这些字节数组。
+
+与使用SequenceFile.Reader的`appenRaw()`方法或或SequenceFileAsBinaryOutputFormat创建顺序文件的过程相配合，可以提供在MapReduce中可以使用任意二进制数据类型的方法(作为顺序文件打包)。
+
+#### 4. 关于FixedLengthInputFormat类
+
+`FixedLengthInputFormat`用于从文件中读取固定宽度的二进制记录，当然这些记录没有用分隔符分开。必须通过`fixedlengthinputformat.record.length`设置每个记录的大小。
+
+### 8.2.4 多个输入
+
+一个MapReduce作业的输人可能包含多个输人文件（由文件glob、过滤器和路径组成），但所有文件都由同一个InputFormat和同一个Mapper来解释。然而，数据格式往往会随时间演变，所以必须写自己的mapper来处理应用中的遗留数据格式问题。或者，有些数据源会提供相同的数据，但是格式不同。对不同的数据集进行连接(join)操作时，便会产生这样的问题。详情参见9.3.2节。例如，有些数据可能是使用制表符分隔的文本文件，另一些可能是二进制的顺序文件。即使它们格式相同，它们的表示也可能不同，因此需要分别进行解析。
+
+这些问题可以用MultipleInputs类来妥善处理，它允许为每条输人路径指定InputFormat和Mapper。例如，我们想把英国Met Office的气象数据和NCDC的气象数据放在一起来分析最高气温，则可以按照下面的方式来设置输人路径：
+
+```java
+MultipleInputs.addInputPath(job,ncdcInputPath,TextInputFormat.class,maxTemperatureMapper.class);
+MultipleInputs.addInputPath(job,metOfficeInputPath,TextInputFormat.class,MetofficeMaxTemperatureMapper.class);
+```
+
+这段代取代了对`FileInputFomat.addInputPath()`和`job.setMapperClass()`的常规调用。MetOfflce和NCDC的数据都是文本文件，所以对两者都使用`TextInputFormat`数据类型。但这两个数据源的行格式不同，所以我们使用了两个不一样的mapper。`MaxTemperatureMapper`读取NCDC的输人数据并抽取年份和气温字段的值。`MetOfficeMaxTemperatureMapper`读取Met Office的输人数据，抽取年份和气温字段的值。重要的是两个mapper的输出类型一样，因此，reducer看到的是聚集后的map输出，并不知道这些输人是由不同的mapper产生的。`MultipleInputs`类有一个重载版本的`addInputPath()`方法，它没有mapper参数：
+
+```java
+public static void addInputPath(Job job,Path path,class<? extends InputFormat> inputFormatClass)
+```
+
+如果有多种输人格式而只有一个mapper(通过Job的setMapperClass()方法设定)，这种方法很有用。
+
+### 8.2.5 数据库输入/输出
+
+DBInputFormat这种输入格式用于泗洪JDBC从关系型数据库中读取数据。因为它没有任何共享能力，所以在访问数据库的时候必须非常小心，在数据库中运行太多的mapper读数据可能会使数据库受不了。正是由于这个原因，DBInputFormat最好用于加载小量的数据集，如果要与来自HDFS的大数据集连接，要使用MultipleInputs。
+
+输出格式是DBOutputFormat，它适用于将作业输出数据(中等规模数据)转储到数据库中。在关系型数据库和HDFS之间的数据移动另一个方法是：使用Sqoop。
+
+HBase的`TableInputFormat`让MapReduce程序操作存放在HBase表中的数据。而`TableOutputFormat`则是把MapReduce的输出写到HBase表。
+
+## 8.3 输出格式
+
+对于前一节介绍的输入格式，Hadoop都有相对应的输出格式。OutputFormat 类的层次结构如图8-4所示。
+
+![](./img/8-4.jpg)
+
+​													**图8-4 OutputFormat类的层次结构**
+
+**OuputFormat类**
+
+- `RecordWriter<K, V> getRecordWriter(TaskAttemptContext var1)`：根据TaskAttemptContext（map及reduce函数的参数Context对象间接继承自该类）对象中的相关信息返回一个RecordWriter()对象（包含一个键值对数据）。后者负责键值对的写入操作。
+- `void checkOutputSpecs(JobContext var1)`：用于检测作业输出规范有效性。比如FileOutputFormat中输出路径未设置、输出路径已存在时会抛出异常。该方法通常会在任务初始化阶段被调
+- `OutputCommitter getOutputCommitter(TaskAttemptContext var1)`：方法来负责确保输出被正确提交
+
+**FileOutputFormat类**
+
+所有写入到文件系统的类都继承自该类，实现了一些公共方法。输入基类该类继承自`OutputFormat`类，实现了以上最后两个方法。
+
+- `setOutputPath(Job job, Path outputDir`)：设置输出路径。
+- `setCompressOutput(Job job, boolean compress)`：是否使用压缩算法压缩输出。
+- `setOutputCompressorClass(Job job, Class<? extends CompressionCodec> codecClass)`：设置压缩算法所使用的类。
+- `checkOutputSpecs(JobContext job)`：实现了OutputFormat，该方法会在输出路径未设置、输出路径存在时抛出异常。
+- `getOutputCommitter(TaskAttemptContext var1)`
+	其并未实现getRecordWriter()方法，由其子类实现。
+
+### 8.3.1 文本输出
+
+默认的输出格式是`TextOuputFormat`，它把每条记录写为文本行。它的键和值可以是任意类型，因为 TextOutputFormat 调用 toString() 方法把它们转换为字符串。每个键/值对由制表符进行分割，当然也可以设定 mapreduce.output.textoutputformat.separator 属性改变默认的分隔符。 与 TextOutputFormat 对应的输入格式是 KeyValueTextInputFormat，它通过可配置的分隔符将键/值对文本分割。
+
+可以使用 NullWritable 来省略输出的键或值(或两者都省略，相当于 NullOutputFormat 输出格式，后者什么也不输出)。 这也会导致无分隔符输出，以使输出适合用 TextInputFormat 读取。
+
+### 8.2.3 二进制输出
+
+#### 1. 关于SequenceFileOutputFormat
+
+SequenceFileOutputFormat 将它的输出写为一个顺序文件。如果输出需要作为后续 MapReduce 任务的输入，这便是一种好的输出格式， 因为它的格式紧凑，很容易被压缩。
+
+#### 2. 关于SequenceFileAsBinaryOutputFormat
+
+SequenceFileAsBinaryOutputFormat与SequenceFileAsBinaryInputFormat相对应，以原始的二进制格式把键-值对写入到一个顺序文件容器中。
+
+#### 3. 关于MapFileOutputFormat
+
+MapFileOutputFormat把map文件作为输入，MapFile中的键必须顺序添加，所以必须确保 reducer 输出的键已经排好序。
+
+reduce输入的键一定是有序的，但是输出的键由reduce函数控制，MapReduce框架中没有硬性规定reduce输出键必须是有序的，所以reduce输出的键必须有序是对MapFileOutputFormat的一个额外限制。
+
+### 8.3.3 多个输出
+
+FileOutputFormat及其子类产生的文件放在输出目录下，每个reducer一个文件并且文件由分区号命名：part-r-00000，part-r-00001，等等。有时可能需要对输出的文件名进行控制或让每个reducer输出多个文件。MapReduce为此提供了MultipleOutputFormat类。
+
+#### 1. 范例：数据分割
+
+有这样一个需求：按气象站来区分气象数据，这需要运行一个作业，作业的输出是每个气象站一个文件，此文件包含该气象站的所有数据记录。
+
+一种方法是每个气象站一个reducer。为此，必须做两件事：
+
+- 自定义分区函数，把同一个气象站的数据放到同一个分区；
+- 把作业的reducer数设为气象站的个数
+
+自定义分区函数如下：
+
+```java
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Partitioner;
+
+//vv StationPartitioner
+public class StationPartitioner extends Partitioner<LongWritable, Text> {
+  
+  private NcdcRecordParser parser = new NcdcRecordParser();
+  
+  @Override
+  public int getPartition(LongWritable key, Text value, int numPartitions) {
+    parser.parse(value);
+    return getPartition(parser.getStationId());
+  }
+
+  private int getPartition(String stationId) {
+    /*...*/
+// ^^ StationPartitioner
+    return 0;
+// vv StationPartitioner
+  }
+
+}
+```
+
+  这里没有给出getPartition(String)方法的实现，它将气象站ID转换为分区索引号，为此，它的输入是一个列出所有气象站ID的列表，返回列表中气象站ID的索引。
+
+这样做有两个缺点：
+
+- 需要在作业运行之前知道分区数和气象站的个数，虽然NCDC数据集提供了气象站的元数据，但是无法保证数据中的气象站ID与元数据匹配。解决这个问题的方法是写一个作业来抽取唯一的气象站ID，但是需要浪费额外的作业来实现。
+- 让应用程序来严格限定分区数并不好，因为可能导致分区数少或分区不均。让很多reducer做少量工作不是一个高效的作业组织方法，比较好的办法是使用更少reducer做更多的事情，因为运行任务的额外开销减少了。分区不均的情况是很难避免的，不同气象站的数据量差异很大：有些气象站是一年前投入使用的，而有些气象站工作了一个世纪。即现实生产环境的数据倾斜问题，如有其中一些reduce任务运行时间远远超过另一些，作业执行时间将由他们决定，从而导致作业的运行时间超过预期。
+
+在以下两种特殊情况下，让应用程序来设定分区数是有好处的
+
+- 0个reducer，这是一个很罕见的情况：没有分区，因为应用只需要map任务
+- 1个reducer，可以很方便的运行若干个小作业，从而把以前作业的输出合并成单个文件。前提是数据量足够小，以便一个reducer能轻松处理。
+
+最好让集群为作业决定分区数：集群的可用资源越多，任务完后就越快。这就是默认HashPartitioner表现如此出色的原因，因为它处理的分区数不限，并且确保每个分区都有一个很好的键组合使分区更均匀。
+
+如果使用HashPartitioner，每个分区就会包含多个气象站，因此，要实现每个气象站输出一个文件，必须安排一个reducer写多个文件，由此就有了MultipleOutput。
+
+#### 2. 关于MultipleOutput
+
+MultipleOutput类可以将数据写到多个文件，文件的名称源于输入的键和值或任意字符串。这允许每个reducer(或者只有map作业的mapper)创建多个文件。采用$name-m-nnnnn$形式的文件名用于map输出，$name-r-nnnnn$形式的文件名用于reduce输出，其中name是程序设定的任意名字，nnnnn是一个指明块号的整数(从00000开始)。块号保证从不同的分区(mapper或reducer)写的输出在相同名字情况下不会冲突。范例8-5显示了如何使用MultipleOutputs按照气象站划分数据。
+
+**范例8-5 用MultipleOutput类将整个数据集分区间到以气象站ID命名的空间**
+
+```java
+mport java.io.IOException;
+
+import org.apache.hadoop.conf.Configured;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.NullWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.mapreduce.Reducer;
+import org.apache.hadoop.mapreduce.lib.output.MultipleOutputs;
+import org.apache.hadoop.util.Tool;
+import org.apache.hadoop.util.ToolRunner;
+
+public class PartitionByStationYearUsingMultipleOutputs extends Configured
+  implements Tool {
+  
+  static class StationMapper
+    extends Mapper<LongWritable, Text, Text, Text> {
+  
+    private NcdcRecordParser parser = new NcdcRecordParser();
+    
+    @Override
+    protected void map(LongWritable key, Text value, Context context)
+        throws IOException, InterruptedException {
+      parser.parse(value);
+      context.write(new Text(parser.getStationId()), value);
+    }
+  }
+  
+  static class MultipleOutputsReducer
+    extends Reducer<Text, Text, NullWritable, Text> {
+    
+    private MultipleOutputs<NullWritable, Text> multipleOutputs;
+    private NcdcRecordParser parser = new NcdcRecordParser();
+
+    @Override
+    protected void setup(Context context)
+        throws IOException, InterruptedException {
+      multipleOutputs = new MultipleOutputs<NullWritable, Text>(context);
+    }
+    
+    @Override
+    protected void reduce(Text key, Iterable<Text> values, Context context)
+        throws IOException, InterruptedException {
+      for (Text value : values) {
+        parser.parse(value);
+        multipleOutputs.write(NullWritable.get(), value, key.toString());
+     }
+    }
+    
+    @Override
+    protected void cleanup(Context context)
+        throws IOException, InterruptedException {
+      multipleOutputs.close();
+    }
+  }
+  
+  @Override
+  public int run(String[] args) throws Exception {
+    Job job = JobBuilder.parseInputAndOutput(this, getConf(), args);
+    if (job == null) {
+      return -1;
+    }
+    
+    job.setMapperClass(StationMapper.class);
+    job.setMapOutputKeyClass(Text.class);
+    job.setReducerClass(MultipleOutputsReducer.class);
+    job.setOutputKeyClass(NullWritable.class);
+
+    return job.waitForCompletion(true) ? 0 : 1;
+  }
+  public static void main(String[] args) throws Exception {
+    int exitCode = ToolRunner.run(new PartitionByStationYearUsingMultipleOutputs(),
+        args);
+    System.exit(exitCode);
+  }
+}
+```
+
+在生成输出的reducer中，在`setup()`方法中构造一个MultipleOutputs实例，`reduce()`方法中使用multipleOutputs实例来写输出，而不是context。`write()`方法作用于键、值、名字。最后产生的输出是：station_identifier_r-nnnnn。
+
+运行产生的输入文件命名如下：
+
+```
+/output/010010-9999-r-00027
+/output/010050-9999-r-00013
+/output/010010-9999-r-00015
+/output/010280-9999-r-00014
+/output/010550-9999-r-00000
+/output/010980-9999-r-00011
+```
+
+在MultipleOutputs的write()方法中指定的基本路径相对于输出路径进行解析，因为可以包含文件路径分隔符(/)，可以创建任意深度的子目录。例如，将数据根据气象站和年份进行划分，这样每年的数据就被包含在一个名为气象站ID的目录中：
+
+**范例8-6 用MultipleOutput类将整个数据集分区间到以气象站ID，年份命名的空间**
+
+```java
+@Override
+protected void reduce(Text key, Iterable<Text> values, Context context)
+  throws IOException, InterruptedException {
+  for (Text value : values) {
+    parser.parse(value);
+    String basePath = String.format("%s/%s/part",
+                                    parser.getStationId(), parser.getYear());
+    multipleOutputs.write(NullWritable.get(), value, basePath);
+  }
+}
+```
+
+MultipleOutput传递给mapper的OutputFormat，该例子中为TextOutputFormat，但是可能有更复杂的情况，例如，可以创建命名的输出，每个都有自己的OutputFormat、键和值的类型。
+
+### 8.3.4 延迟输出
+
+FileOutputFormat的子类会产生输出文件(part-r-nnnnn)，即使文件是空的。有些应用倾向于不创建空文件，可以使用LazyOutputFormat，当且仅当分区有数据是才产生输出。要使用它，用JobConf和相关输出格式作为参数来调用setOutputFormatClass()方法即可：
+
+```java
+job.setOutputFormatClass(LazyOutputFormat.class)
 ```
 
