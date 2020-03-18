@@ -279,3 +279,358 @@ Records with missing temperature fields：5.47％
 
 ## 9.2 排序
 
+排序是MapReduce核心技术。尽管应用本身可能不需要对数据排序，但是仍可能使用MapReduce的排序功能来组织数据。下面将讨论几种不同的数据集排序方法，以及如何控制MapReduce的排序。12.8节介绍了如何对Avro数据进行排序。
+
+## 9.2.1 准备
+
+下面将按气温字段对天气数据集排序，由于气温字段是有符号整数，所以不能将该字段视为Text对象并以字典顺序排序。反之，要用顺序文件存储数据，其lntwritable键代表气温(并且正确排序)，其Text值就是数据行。
+
+范例9·3中的MapReduce作业只包含map任务，它过滤输人数据并移除包含有无效气温的记录。各个map创建并输出一个块压缩的顺序文件。相关指令如下：
+
+```sh
+％hadoop jar hadoop-examples.jar SortDataPreprocessor input/ncdc/all input/ncdc/all-seq
+```
+
+**范例9-3．该MapReduce程序将天气数据转成SequenceFiIe格式**
+
+```java
+public class SortDataPreprocessor extends Configured implements Tool {
+  static class CleanerMapper
+    extends Mapper<LongWritable, Text, IntWritable, Text> {
+    private NcdcRecordParser parser = new NcdcRecordParser();
+    @Override
+    protected void map(LongWritable key, Text value, Context context)
+        throws IOException, InterruptedException {
+      parser.parse(value);
+      if (parser.isValidTemperature()) {
+        context.write(new IntWritable(parser.getAirTemperature()), value);
+      }
+    }
+  }
+  
+  @Override
+  public int run(String[] args) throws Exception {
+    Job job = JobBuilder.parseInputAndOutput(this, getConf(), args);
+    if (job == null) {
+      return -1;
+    }
+    job.setMapperClass(CleanerMapper.class);
+    job.setOutputKeyClass(IntWritable.class);
+    job.setOutputValueClass(Text.class);
+    job.setNumReduceTasks(0);
+    job.setOutputFormatClass(SequenceFileOutputFormat.class);
+    SequenceFileOutputFormat.setCompressOutput(job, true);
+    SequenceFileOutputFormat.setOutputCompressorClass(job, GzipCodec.class);
+    SequenceFileOutputFormat.setOutputCompressionType(job, CompressionType.BLOCK);
+    return job.waitForCompletion(true) ? 0 : 1;
+  }
+  
+  public static void main(String[] args) throws Exception {
+    int exitCode = ToolRunner.run(new SortDataPreprocessor(), args);
+    System.exit(exitCode);
+  }
+}
+```
+
+### 9.2.2 部分排序
+
+如9.1.1所述，在默认情况下。MapReduce根据输入记录的键对数据集排序。范例9-4则是一个变种，它利用`IntWritable`键对`SequenceFile`排序。
+
+**范例9-4 程序调用默认HashPartitioner按lntwritable键排序顺序文件**
+
+```java
+public class SortByTemperatureUsingHashPartitioner extends Configured implements Tool {
+  @Override
+  public int run(String[] args) throws Exception {
+    Job job = JobBuilder.parseInputAndOutput(this, getConf(), args);
+    if (job == null) {
+      return -1;
+    }
+    job.setInputFormatClass(SequenceFileInputFormat.class);
+    job.setOutputKeyClass(IntWritable.class);
+    job.setOutputFormatClass(SequenceFileOutputFormat.class);
+    SequenceFileOutputFormat.setCompressOutput(job, true);
+    SequenceFileOutputFormat.setOutputCompressorClass(job, GzipCodec.class);
+    SequenceFileOutputFormat.setOutputCompressionType(job, CompressionType.BLOCK);
+    return job.waitForCompletion(true) ? 0 : 1;
+  }
+  
+  public static void main(String[] args) throws Exception {
+    int exitCode = ToolRunner.run(new SortByTemperatureUsingHashPartitioner(),args);
+    System.exit(exitCode);
+  }
+}
+```
+
+**控制排序顺序**
+
+键的排序顺序是由`RowComparator`控制的，规则如下：
+
+1. 若属性`mapreduce.job.output.key.comparator.class`已经显式设置，或者通过Job类的`setsortcomparatorC1ass()`方法进行设置，则使用该类的实例。
+2. 否则，键必须是`writablecomparable`的子类，并使用针对该键类的已登记的`comparator`。
+3. 如果还没有已登记的`comparator`，则使用`RawComparator`。`RawComparator`将字节流反序列化为一个对象，再由`WritableComparable`的`compareTo()`方法进行操作。
+
+上述规则彰显了为自定义`writable`类登记`RawComparators`优化版本的重要性，详情可参见5.3.3节介绍的可为提高速变实现一个`RaGmparator`。同时，通过定制`comparator`来重新定义排序顺序也很直观，详情可参见9.2.4节对辅助排序的讨论。
+
+假设采用30个reducer来运行该程序：
+
+```sh
+hadoop jar hadoop-examples.jar SortByTemperatureUsingHashPartitioner \
+-Dmapreduce.jOb.reduces=30 input/ncdc/all-seq output-hashsort
+```
+
+该指令产生30个已排序的输出文件，但是如何将这些小文件合并成一个有序的文件却并非易事。例如，直接将纯文本文件连接起来无法保证全局有序。
+
+幸运的是，许多应用并不强求待处理的文件全局有序。例如，对于通过键进行查找来说，部分排序的文件就已经足够了。范例代码中的`SortByTemperatureToMapFile`类和`LookupRecordsByTemperature`类对这个问题进行了探究。通过使用map文件代替顺序文件，第一时间发现一个键所属的相关分区(使用partitioner)是可能的，然后在map文件分区中执行记录查找操作效率将会更高。
+
+### 9.2.3 全排序
+
+如何使用Hadoop产生一个全局排序的文件？最简单的方法是使用一个分区(a single partitioner)。但该方法在处理大型文件时效率极低，因为一台机器必须处理所有输出文件，从而完全丧失了MapReduce所提供的并行架构优势。
+
+事实上仍有替代方案：
+
+- 首先，创建好一系列排序好的文件；
+- 其次，串联这些文件；
+- 最后时，生成一个全局排序文件。
+
+要的思路是使用一个partitioner来描述输出的全局排序。例如：可以为上述文件创建4个分区，在第一个分区中，各记录的气温小于-10℃，第二分区的气温介于-10℃和0℃之间，第三个分区的气温在0℃和10℃之间，最后一个分区的气温大于10℃。
+
+该方法的关键点在于如何划分各个分区。理想情况下，各分区所含记录数应该大致相等，使作业的总体执行时间不会受制于个别reduce。在前面提到的分区方案中，各分区的相对大小如下所示。
+
+| 气温范围       | <-10℃ | [-10℃，0℃） | [0℃，10℃） | >10℃ |
+| -------------- | ----- | ----------- | ---------- | ---- |
+| 记录所占的比例 | 11℃   | 13％        | 17％       | 59％ |
+
+显然，记录没有均匀划分。只有深人了解整个数据集的气温分布才能建立更均匀的分区。写一个MapReduce作业来计算落人各个气温桶的记录数，并不困难。例如，图9-1显示了桶大小为1℃时各桶的分布情况，各点分别对应一个桶。
+
+获得气温分布信息意味着可以建立一系列分布均匀的分区。但由于该操作需要遍历整个数据集，因此并不实用。**通过对键空间进行采样，就可较为均匀地划分数据集**。采样的核心思想是只查看一小部分键，获得键的近似分布，并由此构建分区。幸运的是，Hadoop已经内置若于采样器，不需要用户自己写。
+
+ `InputSampler`类实现了`Sampler`接口，该接口的唯一成员方法(即`getSample`)有两个输入参数(一个InputFormat对象和一个Job对象)，返回一系列样本键：
+
+```java
+public interface Sampler<K, V> {
+    K[] getSample(InputFormat<K, V> var1, Job var2) throws IOException,InterruptedException;
+}
+```
+
+![](./img/9-1.jpg)
+
+​																**图9-1 天气数据集合的气温分布**
+
+该接口通常不直接由客户端调用，而是由`InputSampler`类的静态方法`writePartitionFile()`调用，目的是创建一个顺序文件来存储定义分区的键：
+
+```java
+public static <K, V> void writePartitionFile(Job job, InputSampler.Sampler<K, V> sampler) throws IOException,ClassNotFoundException, InterruptedException
+```
+
+顺序文件由`TotalOrderPartitioner`使用，为排序作业创建分区，范例9-5整合了上述内容。
+
+**范例9-5．调用TotalOrderPartitioner按IntWritable键对顺序文件进行全局排序**
+
+``` java
+public class SortByTemperatureUsingTotalOrderPartitioner extends Configured implements Tool{
+  
+  @Override
+  public int run(String[] args) throws Exception {
+    Job job = JobBuilder.parseInputAndOutput(this, getConf(), args);
+    if (job == null) {
+      return -1;
+    }
+    job.setInputFormatClass(SequenceFileInputFormat.class);
+    job.setOutputKeyClass(IntWritable.class);
+    job.setOutputFormatClass(SequenceFileOutputFormat.class);
+    SequenceFileOutputFormat.setCompressOutput(job, true);
+    SequenceFileOutputFormat.setOutputCompressorClass(job, GzipCodec.class);
+    SequenceFileOutputFormat.setOutputCompressionType(job,CompressionType.BLOCK);
+    job.setPartitionerClass(TotalOrderPartitioner.class);
+    InputSampler.Sampler<IntWritable, Text> sampler =new InputSampler.RandomSampler<IntWritable, Text>(0.1, 10000, 10);
+    InputSampler.writePartitionFile(job, sampler);
+    // Add to DistributedCache
+    Configuration conf = job.getConfiguration();
+    String partitionFile = TotalOrderPartitioner.getPartitionFile(conf);
+    URI partitionUri = new URI(partitionFile);
+    job.addCacheFile(partitionUri);
+    return job.waitForCompletion(true) ? 0 : 1;
+  }
+  
+  public static void main(String[] args) throws Exception {
+    int exitCode = ToolRunner.run(new SortByTemperatureUsingTotalOrderPartitioner(), args);
+    System.exit(exitCode);
+  }
+}
+```
+
+使用`RandomSampler`以指定的采样率均匀地从一个数据集中选择样本。在本例中，采样率被设为0.1。RamdomSampler的输人参数还包括最大样本数和最大分区(本例中这两个参数分别是10000和10，这也是InputSampler作为应用程序运行时的默认设置)。只要任意一个限制条件满足，即停止采样。采样器在客户端运行，因此，限制分片的下载数量以加速采样器的运行就尤为重要。在实践中，采样器的运行时间仅占作业总运行时间的一小部分。
+
+为了和集群上运行的其他任务共享分区文件，lnputsampler需将其所写的分区文件加到分布式缓存中参见9.4.2节）。
+
+以下方案别以-5.6℃、13.9℃和22.0℃为边界得到4个分区。易知，新方案比旧方案更为均匀。
+
+| 气温范围       | <-5.6℃ | [-5.6℃,13.9℃） | [13.9℃,22.0℃） | >=22.0℃ |
+| -------------- | ------ | -------------- | -------------- | ------- |
+| 记录所占的比例 | 29％   | 24％           | 23％           | 24％    |
+
+输入数据的特性是决定如何挑选最合适的采样器。以SplitSampler为例，它只采样一个分片中的前n条记录。由于并未从所有分片中广泛采样，该采样器并不适合已经排好序的数据。
+
+`IntervalSample`以一定的间隔定期从分片中选择键，因此对于已排序的数据来说是一个更好的选择。`RandomSampler`是优秀的通用采样器。如果没有采样器可以满足应用需求(记住，采样的目的是创建大小近似相等的一系列分区)，则只能实现Sample接口，自定义采样器。
+
+sampler接口。`InputSampler`类和`TotalOrderPartitioner`类的一个好特性是用户可以自由定义分区数，即reducer的数目。然而，由于TotalOrderPartitioner只用于分区边界均不相同的时候，因而当键空间较小时，设置太大的分区数可能会导致数据冲突。
+
+```sh
+％hadoop jar hadoop-examples.jar SortByTemperatureUsingTotalOrderPartitioner\
+-Dmapreduce.job.reduces=30 input/ncdc/all-seq output-totalsort
+```
+
+该程序输出30个已经内部排好序的分区。且分区$i$中的所有键都小于分区$i+1$中的键。
+
+### 9.2.4 辅助排序
+
+MapReduce框架在记录到达reducer之前按键对记录排序，但键对应的值并没有排序，甚至在不同的执行轮次中，这些值的排序也不固定。因为它们时来自不同的map任务且这些map任务在不同轮次中完成时间各不相同。一般来说，大多数MapReduce程序会避免让reduce函数依赖于值排序，但是，有时也需要通过特定的方法对键进行排序和分组等以实现对值的排序。
+
+例如，考虑如何设计一个MapReduce程序以计算每年的最高气温，如果全部记录均按照气温降序排列，则无需遍历整个数据集即可获得查询结果一一获取各年份的首条记录并忽略剩余记录。尽管该方法并不是最佳方案，但演示了辅助排序的工作机理。
+
+为此，首先构建一个同时包含年份和气温信息的组合键，然后对键值先按年份升序排序，再按气温降序排列：
+
+```
+1900 35℃
+1900 34℃
+1900 34℃
+
+...
+1901 36℃
+1901 35℃
+```
+
+如果仅仅是使用组合键的话，并没有太大的帮助，因为这会导致同一年的记录可能有不同的键，通常这种情况下记录并不会被送到同一个reducer中。例如：(1900，35℃)和(1900，34℃)就可能被送到不同的reducer中。通过设置一个按照键的年份进行分区的patitioner，可以确保同一年的记录会被发送到同一个reducer中。但是，这样做还不够。因为partitioner只保证每一个reducer接受一个年份的所有记录，而在一个分区之内，reducer仍是通过键进行分组的分区：
+
+```
+          分区  分组
+1900 35℃   |     |
+1900 34℃   |     |
+1900 34℃   |     |
+...
+1901 36℃   |     |
+1900 35℃   |     |
+```
+
+该问题的最终解决方案是进行分组设置。如果reducer中的值按照键的年份进行分组，则一个reducer组将包括同一年份的所有记录。鉴于这些记录已经按气温降序排列，所以各组的首条记录就是这一年的最高气温。
+
+下面对记录按直排序的方法做一个总结:
+
+- 定义包括自然键和自然值的组合键。
+- 根据组合键对记录进行排序，即同时用自然键和自然值进行排序。
+- 针对组合键进行分区和分组时均只考虑自然键。
+
+#### 1. Java代码
+
+综合起来便得到范例9-6中的源代码，该程序再一次使用了纯文本输人。
+
+**范例9-6，该应用程序通过对键中的气温进行排序来找出最高气温**
+
+```java
+public class MaxTemperatureUsingSecondarySort extends Configured implements Tool {
+  
+  static class MaxTemperatureMapper extends Mapper<LongWritable,Text,IntPair,NullWritable> {
+    private NcdcRecordParser parser = new NcdcRecordParser();
+    @Override
+    protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+      parser.parse(value);
+      if (parser.isValidTemperature()) {
+        context.write(new IntPair(parser.getYearInt(),parser.getAirTemperature()), NullWritable.get());
+      }
+    }
+  }
+  
+  static class MaxTemperatureReducer extends Reducer<IntPair, NullWritable, IntPair, NullWritable> {
+    @Override
+    protected void reduce(IntPair key, Iterable<NullWritable> values,Context context) throws IOException,InterruptedException {
+      context.write(key, NullWritable.get());
+    }
+  }
+  
+  // 组合键分区器
+  public static class FirstPartitioner extends Partitioner<IntPair, NullWritable> {
+    @Override
+    public int getPartition(IntPair key, NullWritable value, int numPartitions) {
+      // multiply by 127 to perform some mixing
+      return Math.abs(key.getFirst() * 127) % numPartitions;
+    }
+  }
+  
+  // 组合键排序器
+  public static class KeyComparator extends WritableComparator {
+    protected KeyComparator() {
+      super(IntPair.class, true);
+    }
+    @Override
+    public int compare(WritableComparable w1, WritableComparable w2) {
+      IntPair ip1 = (IntPair) w1;
+      IntPair ip2 = (IntPair) w2;
+      int cmp = IntPair.compare(ip1.getFirst(), ip2.getFirst());
+      if (cmp != 0) {
+        return cmp;
+      }
+      return -IntPair.compare(ip1.getSecond(), ip2.getSecond()); //reverse
+    }
+  }
+  
+  // 分组器
+  public static class GroupComparator extends WritableComparator {
+    protected GroupComparator() {
+      super(IntPair.class, true);
+    }
+    @Override
+    public int compare(WritableComparable w1, WritableComparable w2) {
+      IntPair ip1 = (IntPair) w1;
+      IntPair ip2 = (IntPair) w2;
+      return IntPair.compare(ip1.getFirst(), ip2.getFirst());
+    }
+  }
+  
+  @Override
+  public int run(String[] args) throws Exception {
+    Job job = JobBuilder.parseInputAndOutput(this, getConf(), args);
+    if (job == null) {
+      return -1;
+    }
+    
+    job.setMapperClass(MaxTemperatureMapper.class);
+    job.setPartitionerClass(FirstPartitioner.class);
+    job.setSortComparatorClass(KeyComparator.class);
+    job.setGroupingComparatorClass(GroupComparator.class);
+    job.setReducerClass(MaxTemperatureReducer.class);
+    job.setOutputKeyClass(IntPair.class);
+    job.setOutputValueClass(NullWritable.class);
+    return job.waitForCompletion(true) ? 0 : 1;
+  }
+  
+  public static void main(String[] args) throws Exception {
+    int exitCode = ToolRunner.run(new MaxTemperatureUsingSecondarySort(), args);
+    System.exit(exitCode);
+  }
+
+}
+```
+
+上述mapper中，利用IntPair类定义了一个代表年份和气温的组合键。该类实现了Writable接口。IntPair与TextPair类相似，后者可以参见5.3.3节的相关讨论。由于可以根据各reducer的组合键获得最高气温，因此无需在值上附加其他信息，使用NullWritable即可。根据辅助排序，reducer输出的第一个键就是包含年份和最高气温信息的IntPair对象。IntPair的tostring()方法返回一个以制表符分隔的字符串，因而该程序输出一组由制表符分隔的年份/气温对。
+
+创建一个自定义的partitioner以按照组合键的首字段(年份)进行分区，即FirstPartitioner。为了按照年份(升序)和气温(降序)排列键，使用`setSortComparatorClass()`设置一个自定义键comparator(即KeyComparator)，以抽取字段并执行比较操作。类似的，为了按年份对键进行分组，使用`SetGroupingComparatorClass()`来自定义一个分组comparator，只取键的首字段进行比较。
+
+运行该程序，返回各年的最高气温：
+
+```sh
+hadoop jar hadoop-examples.jar MaxTemperatureUsingSecondarySort input/ncdc/all\
+output-secondarysort
+hadoop fs -cat output-secondarysort/part-* | sort | head
+
+1901   317
+1902   244
+1903   289
+1904   256
+```
+
+## 9.3 连接
+
+MapReduce能够执行大型数据集之间的"连接"(join)操作，但是，自己从头写相关的代码来执行非常棘手，除了写MapReduce程序，还可以考虑采用更高级的框架。如：Pig、Hive、Cascading、Cruc或Spark，它们都将连接操作时为整个实现的核心部分。
+
+先简要地描述待解决问题，假设有两个数据集：气象站数据库和天气记录数据集，并考虑如何二合一。一个典型的查询是：输出个气象站的历史信息，同时各行记录也包含气象站的元数据信息，如图9-2所示。
