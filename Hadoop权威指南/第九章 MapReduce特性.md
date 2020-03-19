@@ -634,3 +634,440 @@ hadoop fs -cat output-secondarysort/part-* | sort | head
 MapReduce能够执行大型数据集之间的"连接"(join)操作，但是，自己从头写相关的代码来执行非常棘手，除了写MapReduce程序，还可以考虑采用更高级的框架。如：Pig、Hive、Cascading、Cruc或Spark，它们都将连接操作时为整个实现的核心部分。
 
 先简要地描述待解决问题，假设有两个数据集：气象站数据库和天气记录数据集，并考虑如何二合一。一个典型的查询是：输出个气象站的历史信息，同时各行记录也包含气象站的元数据信息，如图9-2所示。
+
+连接操作的具体实现方式取决于数据集的规模及分区方式。如果一个数据集很大（例如天气记录）而另外一个集合很小，以至于可以分发到集群中的每一个节点之中(例如气象站元数据)，则可以执行一个MapReduce作业，将各个气象站的天气记录放到一块(例如，根据气象站ID执行部分排序)，从而实现连接。mapper或reducer根据各气象站ID从较小的数据集合中找到气象站元数据，使元数据能够被写到各条记录之中。该方法将在9，4节中详细介绍，它侧重于将数据分发到集群中节点的机制。
+
+![](./img/9-2.jpg)
+
+​													**图9-2 两个数据集的内连接**
+
+连接操作如果由mapper执行，则称为"map端连接"；如果由reducer执行，则称为"reduce端连接"。
+
+如果两个数据集的规模均很大，以至于没有哪个数据集可以被完全复制到集群的每个节点，我们仍然可以使用MapReduce来进行连接，至于到底采用map端连接还是reduce端连接，则取决于数据的组织方式。最常见的一个例子便是用户数据库和用户活动日志（例如访问日志)。对于一个热门服务来说，将用户数据库（或日志）分发到所有MapReduce节点中是行不通的。
+
+### 9.3.1 Mapper端连接
+
+在两个大规模输人数据集之间的map端连接会在数据到达map函数之前就执行连接操作。为达到该目的，各map的输人数据必须先分区并且以特定方式排序。各个输人数据集被划分成相同数鼠的分区，并且均按相同的键（连接键）排序。同一键的所有记录均会放在同一分区之中。听起来似乎要求非常严格啲确如此,但这的确合乎MapReduce作业的输出。
+
+利用`org.apache.hadoop.mapreduce.join`包中的`CompositeInputFormat`类来运行一个map端连接。`compositeInputFormat`类的输人源和连接类型（内连接或外连接）可以通过一个连接表达式进行配置，连接表达式的语法简单。详情与示例可参见包文档。
+
+`org.apache.hadoop.examples.join是`一个通用的执行map端连接的命令行程序样例。该例运行一个基于多个输人数据集的mapper和reducer的MapReduce作业，以执行给定的连接操作。
+
+### 9.3.2 reduce端连接
+
+由于reduce端连接并不要求输人数据集符合特定结构，因而reduce端连接比map端连接更为常用。但是，由于两个数据集均需经过MapReduce的shuffle过程，所以reduce端连接的效率往往要低一些。基本思路是mapper为各个记录标记源，并且使用连接键为map输出键，使键相同的记录放在同一个reducer中，以下技术能帮助实现reduce端连接。
+
+#### 1. 多输入
+
+数据集的输人源往往有多种格式，因此可以使用`Multiplelnputs`类（参见8.2.4节）来方便地解析和标注各个源。
+
+#### 2. 辅助排序
+
+如前所述，reduce将从两个源中选出键相同的记录，但这些记录不保证是经过排序的，为了更好地执行连接操作，一个源的数据排列在另一个源的数据前是非常重要的。以天气数据连接为例，对应每个键，气象站记录的值必须是最先看到的，这样reducer能够将气象站名称填到天气记录之中再马上输出。虽然也可以不指定数据传输次序，并将待处理的记录缓存在内存之中，但应该尽量避免这种情况，因为其中任何一组的记录数量可能非常庞大，远远超出reducer的可用内存容量。
+
+9.2.4节介绍如何对reducer所看到的每个键的值进行排序，所以在此也用到了辅助排序技术。
+
+为标记每个记录，使用第5章的TextPair类，包括键(存储气象站ID)和“标记”。在这里，“标记"是一个虚拟的字段，其唯一目的是用于记录的排序，使气象站记录比天气记录先到达。一种简单的做法就是：对于气象站记录，“标记”值为0；对于天气记录，“标记”值为1。范例9-9和范例9-10分别描述了执行该任务的两个mapper类。
+
+**范例9-9，在reduce端连接中，标记气象站记录的mapper。**
+
+```java
+public class JoinStationMapper extends Mapper<LongWritable, Text, TextPair, Text> {
+  private NcdcStationMetadataParser parser = new NcdcStationMetadataParser();
+  @Override
+  protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+    if (parser.parse(value)) {
+      context.write(new TextPair(parser.getStationId(), "0"),new Text(parser.getStationName()));
+    }
+  }
+}
+```
+
+**范例9-10．在reduce端连接中标记天气记录的mapper**
+
+```java
+public class JoinRecordMapper extends Mapper<LongWritable, Text, TextPair, Text> {
+  private NcdcRecordParser parser = new NcdcRecordParser();
+  @Override
+  protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+    parser.parse(value);
+    context.write(new TextPair(parser.getStationId(), "1"), value);
+  }
+}
+```
+
+reducer知道会先接受气象站的记录，因此从其中抽出值，并将其作为后续每条输出记录的一部分写到输出文件。如范例9-11所示。
+
+**范例9-11．用于连接已标记的气象站记录和天气记录的reducer**
+
+```java
+public class JoinReducer extends Reducer<TextPair, Text, Text, Text> {
+  @Override
+  protected void reduce(TextPair key, Iterable<Text> values, Context context) throws IOException,InterruptedException {
+    Iterator<Text> iter = values.iterator();
+    Text stationName = new Text(iter.next());
+    while (iter.hasNext()) {
+      Text record = iter.next();
+      Text outValue = new Text(stationName.toString() + "\t" + record.toString());
+      context.write(key.getFirst(), outValue);
+    }
+  }
+}
+```
+
+上述代码假设天气记录的每个气象站ID恰巧与气象站数据集中的一条记录准确匹配。如果该假设不成立，则需要泛化代码，使用另一个TextPair将标记放人值的对象中。reduce()方法在处理天气记录之前，要能够区分哪些记录是气象站名称，检测（和处理）缺失或重复的记录。
+
+将作业连接在一起通过驱动类来完成，如范例9-12所示。这里，关键点在于根据组合键的第一个字段（即气象站 ID)进行分区和分组，即使用一个自定义的partitioner(即KeyPartitioner)和一个自定义的分组comparator(FirstComparator，作为TextPair的嵌套类）。
+
+**范例9-12，对天气记录和气象站名称执行连接操作**
+
+```java
+public class JoinRecordWithStationName extends Configured implements Tool {
+  
+  public static class KeyPartitioner extends Partitioner<TextPair, Text> {
+    @Override
+    public int getPartition(TextPair key, Text value, int numPartitions) {
+      return (key.getFirst().hashCode() & Integer.MAX_VALUE) % numPartitions;
+    }
+  }
+  
+  @Override
+  public int run(String[] args) throws Exception {
+    if (args.length != 3) {
+      JobBuilder.printUsage(this, "<ncdc input> <station input> <output>");
+      return -1;
+    }
+    
+    Job job = new Job(getConf(), "Join weather records with station names");
+    job.setJarByClass(getClass());
+    Path ncdcInputPath = new Path(args[0]);
+    Path stationInputPath = new Path(args[1]);
+    Path outputPath = new Path(args[2]);
+    MultipleInputs.addInputPath(job, ncdcInputPath,TextInputFormat.class, JoinRecordMapper.class);
+    MultipleInputs.addInputPath(job, stationInputPath,TextInputFormat.class, JoinStationMapper.class);
+    FileOutputFormat.setOutputPath(job, outputPath);
+    job.setPartitionerClass(KeyPartitioner.class);
+    job.setGroupingComparatorClass(TextPair.FirstComparator.class);
+    job.setMapOutputKeyClass(TextPair.class);
+    job.setReducerClass(JoinReducer.class);
+    job.setOutputKeyClass(Text.class);
+    return job.waitForCompletion(true) ? 0 : 1;
+  }
+  
+  public static void main(String[] args) throws Exception {
+    int exitCode = ToolRunner.run(new JoinRecordWithStationName(), args);
+    System.exit(exitCode);
+  }
+}
+```
+
+## 9.4 边数据分布
+
+“边数据”(side data)是作业所需的额外只读数据，以辅助处理主数据集。所面临的挑战在于如何使用所有map或reduce任务(这些任务散布在集群内部)能够方便而高效地使用边数据。
+
+### 9.4.1 利用JobConf来配置作业
+
+Configuration类的各种setter方法能够方便地配置作业的任一键-值对，如果仅需向任务传递少量元数据则非常有用。
+
+在任务中，用户可以通过context类的`getConfiguration()`方法获得配置信息。
+
+一般情况下，基本类型足以应付元数据编码。但对于更复杂的对象，用户要么自己处理序列化工作（这需要实现一个对象与字符串之间的双向转换机制），要么使用Hadoop提供的Stringifier类。DefaultStringifier使用Hadoop的序列化框架来序列化对象。
+
+但是这种机制会加大Hadoop守护进程的内存开销压力，当几百个作业在系统中同时运行时这种现象尤为突出。因此，这种机制并不适合传输多达几千字节的数据量。每次读取配置时，所有项都被读入到内存（即使暂时不用的属性项也不例外）。
+
+```java
+public class SideData extends Configured implements Tool{
+ 
+	static class SideDataMapper extends Mapper<LongWritable, Text, Text, Text>{
+		String sideDataValue = "";
+		@Override
+		protected void setup(Mapper<LongWritable, Text, Text, Text>.Context context)
+				throws IOException, InterruptedException {
+			sideDataValue = context.getConfiguration().get("sideData_test_key");
+		}
+		
+		@Override
+		protected void map(LongWritable key, Text value, Mapper<LongWritable, Text, Text, Text>.Context context)
+				throws IOException, InterruptedException {
+			context.write(value, new Text(sideDataValue));
+		}
+	}
+	
+	public int run(String[] args) throws Exception {
+ 
+		Configuration configuration = new Configuration();
+		configuration.set("sideData_test_key", "sideData_test_value");
+		Job job = Job.getInstance(configuration);
+		job.setJobName("SideData");
+		job.setJarByClass(getClass());
+		
+		job.setMapperClass(SideDataMapper.class);
+		
+		job.setMapOutputKeyClass(Text.class);
+		job.setMapOutputValueClass(Text.class);
+		
+		job.setNumReduceTasks(0);
+		
+		FileInputFormat.addInputPath(job, new Path(args[0]));
+		FileOutputFormat.setOutputPath(job, new Path(args[1]));
+		
+		return job.waitForCompletion(true) ? 0 : 1;
+	}
+ 
+	public static void main(String[] args) {
+		try {
+			String[] params = new String[] {
+					"hdfs://fz/user/hdfs/MapReduce/data/sideData/job/input",
+					"hdfs://fz/user/hdfs/MapReduce/data/sideData/job/output"
+					};
+			int exitCode = ToolRunner.run(new SideData(), params);
+			System.exit(exitCode);
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}	
+}
+```
+
+### 9.4.2 分布式缓存
+
+在与作业配置中序列化边数据的技术相比，Hadoop分布式缓存机制更受青睐，它能够在任务运行过程中及时地将文件和存档复制到任务节点以供使用。为了节约网络带宽，在每一个作业中，各个文件通常只需复制到一个节点一次。
+
+#### 1. 用法
+
+对于使用GenericOptionsParser的工具来说，用户可以使用-files选项指定待分发的文件，文件内容包括：以逗号间隔开的URI列表。文件可以存在放本地文件系统，HDFS或其他Hadoop可读的文件系统。如果尚未指定文件系统，则这些文件被默认是本地的。
+
+用户可以使用`-archives`选项向自己的任务中复制存档文件（JAR文件、ZIP文件、tar文件和gzipped tar文件），这些文件会被解档到任务节点。-libjars选项会把JAR文件添加到mapper和reducer任务的类路径中。如果作业JAR文件并非包含很多库JAR文件，这点会很有用。
+
+以下指定显示如何使用分布式缓存来共享元数据文件，从而得到气象站的名称：
+
+```sh
+% hadoop jar hadoop-examples.jar \
+	MaxTemperatureByStationNameUsingDistributedCacheFile \
+	-files input/ncdc/metadata/stations-fixed-with.txt input/ncdc/all/output
+```
+
+该命令将本地文件stations-fixed-with.txt复制到任务节点，从而可以查找气象站名称。范例9-13描述了类MaxTemperatureByStationNameUsingDistributedCacheFile。
+
+```java
+public class MaxTemperatureByStationNameUsingDistributedCacheFile extends Configured implements Tool{
+  
+  	static Logger logger = 	    Logger.getLogger(MaxTemperatureByStationNameUsingDistributedCacheFile.class);
+    static enum StationFile{STATION_SIZE};
+  
+    static class StationTemperatureMapper extends Mapper<LongWritable, Text, Text, IntWritable>{
+		private NcdcRecordParser parser = new NcdcRecordParser();
+		@Override
+		protected void map(LongWritable key, Text value, Mapper<LongWritable, Text, Text, IntWritable>.Context context)
+				throws IOException, InterruptedException {
+			parser.parse(value.toString());
+			if (parser.isValidTemperature()) {
+				context.write(new Text(parser.getStationId()), new IntWritable(parser.getTemperature()));
+			}
+		}
+	}
+  
+  static class MaxTemperatureReducerWithStationLookup extends Reducer<Text, IntWritable, Text, IntWritable>{
+		private NcdcStationMetadata metadata;
+		
+		@Override
+		protected void setup(Reducer<Text, IntWritable, Text, IntWritable>.Context context)
+				throws IOException, InterruptedException {
+			metadata = new NcdcStationMetadata();
+			File file = new File("stations-fixed-width.txt");
+			metadata.initialize(file);
+		context.getCounter(StationFile.STATION_SIZE).setValue(metadata.getStationMap().size());
+		}
+		
+		@Override
+		protected void reduce(Text key, Iterable<IntWritable> values,Reducer<Text, IntWritable, Text, IntWritable>.Context context) throws IOException, InterruptedException {
+			String stationName = metadata.getStationName(key.toString());
+			int maxValue = Integer.MIN_VALUE;
+			for (IntWritable value : values) {
+				maxValue = Math.max(maxValue, value.get());
+			}
+			context.write(new Text(stationName), new IntWritable(maxValue));
+		}
+	}
+  
+  public int run(String[] args) throws Exception {
+		Job job = Job.getInstance(getConf());
+		job.setJobName("MaxTemperatureByStationNameUsingDistributedCacheFile");
+		job.setJarByClass(getClass());
+		
+		job.setMapperClass(StationTemperatureMapper.class);
+		job.setMapOutputKeyClass(Text.class);
+		job.setMapOutputValueClass(IntWritable.class);
+		
+		job.setReducerClass(MaxTemperatureReducerWithStationLookup.class);
+		job.setOutputKeyClass(Text.class);
+		job.setOutputValueClass(IntWritable.class);
+		
+		FileInputFormat.setInputPaths(job, new Path(args[0]));
+		FileOutputFormat.setOutputPath(job, new Path(args[1]));
+		
+		return job.waitForCompletion(true) ? 0 : 1;
+	}
+  
+  public static void main(String[] args) {
+		try {
+			String[] params = new String[] {
+					"hdfs://fz/user/hdfs/MapReduce/data/sideData/distributedCache/input",
+					"hdfs://fz/user/hdfs/MapReduce/data/sideData/distributedCache/output"
+					};
+			int exitCode = ToolRunner.run(new MaxTemperatureByStationNameUsingDistributedCacheFile(), params);
+			System.exit(exitCode);
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
+}
+```
+
+```java
+public class NcdcStationMetadata {
+ 
+	/**
+	 * 存放气象站ID和name
+	 */
+	private Map<String, String> stationMap = new HashMap<String, String>();
+	
+	
+	public Map<String, String> getStationMap() {
+		return stationMap;
+	}
+ 
+	public void setStationMap(Map<String, String> stationMap) {
+		this.stationMap = stationMap;
+	}
+ 
+	/**
+	 * 根据ID获取name
+	 * @param stationId
+	 * @return
+	 */
+	public String getStationName(String stationId) {
+		return stationMap.get(stationId);
+	}
+	
+	/**
+	 * 解析
+	 * @param value
+	 */
+	public boolean parse(String value) {
+		String[] values = value.split(",");
+		if (values.length >= 2) {
+			String stationId = values[0];
+			String stationName = values[1];
+			if (null == stationMap) {
+				stationMap = new HashMap<String, String>();
+			}
+			stationMap.put(stationId, stationName);
+			return true;
+		}
+		return false;
+	}
+	
+	/**
+	 * 解析气象站数据文件
+	 * @param file
+	 */
+	public void initialize(File file) {
+		
+		BufferedReader reader=null;
+		String temp=null;
+		try{
+			reader=new BufferedReader(new FileReader(file));
+			System.out.println("------------------start------------------");
+			while((temp=reader.readLine())!=null){
+				System.out.println(temp);
+				parse(temp);
+			}
+			System.out.println("------------------end------------------");
+		}
+		catch(Exception e){
+			e.printStackTrace();
+		}
+		finally{
+			if(reader!=null){
+				try{
+					reader.close();
+				}
+				catch(Exception e){
+					e.printStackTrace();
+				}
+			}
+		}
+ 
+	}
+	
+}
+```
+
+该程序通过气象站查找最高气温，因此mapper(StationTemperatureMapper)仅输出(气象站ID，气温)对。对于combiner，重用MaxTemperatureReducer来为map端的map输出分组获得最高气温。reducer则有所不同，不仅要查找最高气温，还需要根据缓存文件查找气象站名称。
+
+该程序调用reducer的setup()方法获取缓存文件，输入参数是文件的原始名称，文件的路径与任务的工作目录相同。
+
+#### 2. 工作机制
+
+当用户启动一个作业，Hadoop会把由-files、-archives和-libjars等选项所指定的文件复制到分布式文件系统(一般是HDFS)之中。接着，在任务运行之前，YARN中NodeManager将文件从分布式文件系统复制到本地磁盘(缓存)使任务能够访问文件。此时，这些文件就被视为本地化了。从任务的角度看，这些文件就已经在那儿了(它并不关心这些文件是否来自HDFS)。此外，由-libjars指定的文件会在任务启动前添加到任务的类路径(classpath)中。
+
+YARN中的节点管理器NodeManager为缓存中的文件各维护一个计数器来统计这些文件的被使用情况。当任务即将运行时，该任务所使用的所有文件的对应计数器值增1；当任务执行完毕之后，这些计数器值均减1.当相关计数器值为0时，表明该文件没有被任何任务使用，可以从缓存中移除。缓存的容量是有限的(默认10GB)，因此需要经常删除无用的文件以腾出空间来装载新文件。缓存大小可以通过属性`local.cache.size`进行配置，以字节为单位。
+
+尽管该机制并不确保在同一个Worker节点上运行的同一作业的后续任务肯定能在缓存中找到文件，但是成功的概率相当大。原因在于作业的多个任务在调度之后几乎同时开始运行，因此，不会有足够多的其他作业在运行而导致原始任务的文件从缓存中被删除。
+
+文件存放在nodeManager的`${mapred.local.dir}/taskTracker/archive`目录下。但是应用程序不必知道这一点，因为这些文件同时以符号链接的方式指向任务的工作目录。
+
+#### 3. 分布式缓存API
+
+由于可以通过GenericOptionsParser间接使用分布式缓存，大多数应用不需要使用分布式缓存API。然而如果没有使用GenericOptionsParser，那么可以使用Job中的API将对象放进分布式缓存。API包括两部分：将数据放到缓存中的方法，以及从缓存中读取数据的方法。
+
+```java
+public void addCacheFile(URI uri)
+public void addCacheArchive(URI uri)
+public void setCacheFiles(URI[] files)
+public void setCacheArchives(URI[] archives)
+public void addFileToClassPath(Path file)
+public void addArchiveToClassPath(Path archive)
+```
+
+在缓存中可以存放两类对象：文件(files)和存档(archives)。文件被直接放置在任务节点上，而存档则会被解档之后再将具体文件放置在任务节点上。每种对象类型都包含三种方法：
+
+- addCacheXXX()：将文件或存档添加到分布式缓存
+- setCacheXXXs()：向分布式缓存中添加一组文件或存档(之前调用所生成的集合将被替换)
+- addXXXToClassPath()：将文件或存档添加到MapReduce任务的类路径
+
+表9-7对上述API方法与GenericOptionsParser选项(详见表6-1)做了一个比较。
+
+​															**表9-7 分布式缓存API**
+
+| Job的API名称                                          | GenericOptionsParser的等价选项  | 说明                                                         |
+| ----------------------------------------------------- | ------------------------------- | ------------------------------------------------------------ |
+| addCacheFile(URI uri)setCacheFiles(URI[] files)       | -files file1,file2,...          | 将文件添加到分布式缓存，以备将来被复制到任务节点             |
+| addCacheArchive(URI uri)setCacheArchives(URI[] files) | -archives archive1,archive2,... | 将存档添加到分布式缓存，以备将来被复制到任务节点，并在节点解档 |
+| addFileToClassPath(Path file)                         | -libjars jar1,jar2,...          | 将文件添加到分布式缓存，以备将来被复制到MapReduce任务的类路径中。文件并不会被解档，因此适合向类路径添加JAR文件 |
+| addArchiveToClassPath(Path archive)                   | 无                              | 将存档添加到分布式缓存，以备将来解档、添蜘R的类路径中。当想向类路径添加目录和文件时，这种方式比较有用，因为用户可以创建一个包含指定文件的存档。此外，用户也可以创建一个JAR文件，并使用addFileToClassPath()，效果相同 |
+
+add和set方法中的输人参数URI是指在作业运行时位于共享文件系统中的（一组）文件。而GenericOptionsParser选项（例如-files）所指定的文件可以是本地文件，如果是本地文件的话，则会被复制到默认的共享文件系统（一般是HDFS)。
+
+这也是使用JavaAPI和使用GenericOptionsParser的关键区别：JavaAPI的add和方法不会将指定文件复制到共享文件系统中，但GenericOptionsParser会这样做。
+
+从任务中获取分布式缓存文件在工作机理上和以前是一样的：通过名称访问本地化的文件，如范例9-13中所示。之所以起作用，是因为MapReduce总会在任务的工作目录和添加到分布式缓存中的每个文件或存档之间建立符号化链接。存档被解档后就能使用嵌套的路径访问其中的文件。
+
+## 9.5 MapReduce类库
+
+Hadoop还为mapper和reducer提供了一个包含了常用函数的库。表9-8简要描述了这些类。
+
+​															**表9-8．MapReduce库的类**
+
+| 的名称                                                       | 描述                                                         |
+| ------------------------------------------------------------ | ------------------------------------------------------------ |
+| ChainMapper,ChainReducer                                     | 在一个mapper中运行多个mapper，再运行一个reducer，随后在一个reducer中运行多个mapper。（符号表示：M+RM*，其中M是mapper，R是reducer.）与运行多个MapReduce作业相比，该方案能够显著降低磁盘I/O开销 |
+| FieldSelectionMapReduce（旧版API)：FieldSelectionMapper和FieldSelectionReducer（新版API) | 能从输人键和值中选择字段（类似Unix的cut命令),并输出键和值的mapper和reducer |
+| IntSumReducer，LongSumReducer                                | 对各键的所有整数值执行求和操作的reducer                      |
+| InverseMapper                                                | 一个能交换键和值的mapper                                     |
+| MultithreadedMapper                                          | 一个能在多个独立线程中分别并发运行mapper的mapr（或者旧版API中的maprunner).该技术对于非CPU受限的mapper比较有用 |
+| TokenCounterMapper                                           | 将输人值分解成独立的单词（使用Java的stringTokenizer)并输出每个单词和计数值1的mapper |
+| RegexMapper                                                  | 检查输人值是否匹配某正則表达式，输出匹配字符串和计数为1的mapper |
+
