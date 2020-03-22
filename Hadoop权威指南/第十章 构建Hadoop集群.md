@@ -221,3 +221,94 @@ mapred -jobhistory-daemon.sh start historyserver
 ％hdfs dfsadmin -setSpaceQuota 1t /user/username
 ```
 
+## 10.3 Hadoop配置
+
+有多个配置文件适用于Hadoop安装，表10-1列举出了最重要的几个文件。
+
+​															**表10-1 Hadoop配置文件**
+
+| 文件名称                   | 格式          | 描述                                                         |
+| -------------------------- | ------------- | ------------------------------------------------------------ |
+| hadoop-env.sh              | Bash脚本      | 脚本中要用到的环境变，以运行Hadoop                           |
+| mapred-env.sh              | Bash脚本      | 脚本中要用到的环境变最，以运行MapReduce(覆盖hadoop-env.sh中设置的变量) |
+| yarn-env.sh                | Bash脚本      | 脚本中要用到的环境变量，以运行YARN(覆盖hadoop-env.sh中设置的变量） |
+| core-site.xml              | Hadoop配置XML | Hadoop Core的配置项，例如HDFS、MapReduce和YARN常用的I/O设置等 |
+| hdfs-site.xml              | Hadoop配置XML | Hadoop守护进程的配置项，包括namenode、辅助namenode和datanode等 |
+| mapred-site.xml            | Hadoop配置XML | MapReduce守护进程的配置项，包括作业历史服务器                |
+| yarn-site.xml              | Hadoop配置XML | YARN守护进程的配置项，包括资源管理器、web应用代理服务器和节点管理器(node manager) |
+| slaves                     | 纯文本        | 运行datanode和节点管理器的机器列表（每行一个）               |
+| hadoop-metrics2.proterties | Java属性      | 控制如何在Hadoop上发布度量的属性（参11.2.2节）               |
+| log4j.properties           | Java属性      | 系统日志文件、namenode审计日志、任务JVM进程的任务日志的属性,参见6.5.6节 |
+| hadoop-policy.xml          | Hadoop配置XML | 安全模式下运行Hadoop时的访问控制列表的配置项                 |
+
+这几个重要文件都放在Hadoop分发包的`/etc/hadoop`目录中。配置目录可以被重新安置在文件系统的其他地方(Hadoop安装路径以外，便于升级)，只要启动守护进程时使用`--config`选项(或等价使用`HADOOP_CONF_DIR`环境变量集)说明这个目录在本地文件系统的位置就可以了。
+
+### 10.3.1 配置管理
+
+Hadoop并没有将所有配置信息放在一个单独的全局位置中。反之，集群的每个Hadoop节点都各自保存一系列配置，并由管理员完成这些配置文件的同步工作。有并行shell工具完成同步工作，诸如dsh或pdsh。这方面，Hadoop集群管理工具例如Cloudera Manager和Apache Ambari表现突出，因为在集群间传递修改信息是它们的关注点。
+
+Hadoop也支持为所有master机器和worker机器采用同一套配置文件。这个做法的最大优势在于简单，不仅体现在理论上(仅需处理一套配置文件)，也体现在可操作性上(使用Hadoop脚本就能进行管理)。
+
+但是，这种一体使用的配置模型并不合适某些集群。以扩展集群为例，当试图为集群添加新机器，且新机器的硬件规格与现有机器不同时，则需要新建一套配置文件，以充分利用新硬件的额外资源。
+
+在这种情况下，需要引入**机器类**的概念。为每一机器类维护单独的配置文件。Hadoop没有提供执行这个操作的工具，需要借助外部工具来执行该配置操作，例如Chef、Puppet、CFEngine和Bcfg2等。
+
+对于任何规模的集群来说，同步所有机器上的配置文件都极具挑战性。例如：假设某台机器正好处于异常状态，而此时用户正好发出一条更新配置的指令，如何保证这台机器在恢复正常状态之后也能够更新配置？这个问题很严重，可能会导致集群中各机器的配置不一致。因此，尽管用户能够使用控制脚本来管理Hadoop，仍然推**荐使用控制管理工具管理集群**。使用这些工具也可以顺利完成日常维护，例如为安全漏洞打补丁、升级系统包等。
+
+### 10.3.2 环境设置
+
+本节探讨如何设置`hadoop-env.sh`文件中的变量。MapReduce和YARN(HDFS除外)都有类似的配置文件。分别为`mapred-env.sh`和`yarn-env.sh`，文件中的变量和组件相关，并且可以进行设置，注意：hadoop-env.sh文件里设置的值会被MapReduce和YARN文件覆盖。
+
+#### 1. Java
+
+需要设置Hadoop系统Java的安装位置：
+
+- 方法一：在`Hadoop-env.sh`文件中设置`JAVA_HOME`项；
+- 方法二：在shell中设置`JAVA_HOME`环境变量
+
+相比之下，方法一更好，因为只需操作一次就能够保证整个集群使用同一版本的Java。
+
+#### 2. 内存堆大小
+
+在默认情况下，Hadoop为各个守护进程分配1000MB(1G)内存。该内存值由`hadoop-env.sh`文件的`HADOOP_HEAPSIZE`属性控制。可以通过设置坏境变量为单个守护进程修改堆大小。例如，在`yarn-env.sh`文件中设置`YARN_RESOURCEMANAGER_HEAPSIZE`，即可覆盖资源管理器的堆大小。
+
+令人惊讶的是，尽管为namenode分配更多的堆空间是很常见的事情，但是对于HDFS守护进程而言并没有相应的环境变量。当然有别的途径可以设置namenode堆空间大小，见接下来的讨论。
+
+除了守护进程对内存的需求，节点管理器还需为应用程序分配容器（container），因此需要综合考虑上述因素来计算一个工作机器的总体内存需求，详见10.3．3节中YARN和MapReduce内存设置的有关内容。
+
+**一个守护进程究竟需要多少内存**
+
+由于namenode会在内存中维护所有文件的每个数据块引用，因此namenode很有可能“吃光”所有分配给它的内存，很难套用一个共识来精确计算内存需求量，因为内存需求量取决于多个因素，包括：每个文件包含的数据块数、文件名称的长度、文件系统中的目录数等。此外，在不同Hadoop版本下，namenode内存需求也不同。
+
+1000MB内存(默认配置)通常足够管理数百万个文件，但是根据经验来看，保守估计需要为每1百万个数据块分配1000MB内存空间。
+
+以一个含200节点的集群为例，假设每个节点有24TB磁盘空间，数据块大小是128MB，复本数是3的话，则约有2百万个数据块(甚至更多)：$\frac{200 \times 24000000MB}{128MB \times 3}$。因此，在本例中，namenode的内存空间最好一开始设为12000MB。
+
+也可以只增加namenode内存分配量而不改变其他Hadoop守护进程的内存分配，即设置`hadoop-env.sh`文件的`HADOOP_NAMENODE_OPTS`属性包含一个JVM选项以设定内存大小。`HADOOP_NAMENODE_OPTS`允许向namenode的JVM传递額外的选项。以SunJVM为例，`-Xmx2000m`选项表示为namenode分配2000MB内存空间。
+
+由于辅助namenode的内存需求量和主namenode差不多，所以一旦更改namenode的内存分配的话还需对辅助namenode做相同更改(使用`HADOOP_SECONDARYNAMENODE_OPTS`变量)。
+
+#### 3. 系统日志文件
+
+默认情况下，Hadoop生成的系统日志文件存放在`/HADOOP_HOME/logs`目录之中，也可以通过`hadoop-env.sh`文件中的`HADOOP_LOG_DIR`来进行修改。建议修改默认设置，使之独立于Hadoop的安装目录。这样的话，即使Hadoop升级之后安装路径发生变化，也不会影响日志文件的位置。通常可以将日志文件存放在`/var/log/hadoop`目录中。实现方法很简单，就是在`hadoop-env.sh`中加人一行：
+
+```bash
+export HADOOP_LOG_DIR=/var/log/hadoop
+```
+
+如果日志目录并不存在，则会首先创建该目录(如果操作失败，请确认相关的Unix Hadoop用户是否有权创建该目录)。运行在各台机器上的各个Hadoop守护进程会产生两类日志文件：
+
+- 第一类日志文件(以.log作为后缀名)是通过log4j记录的。鉴于大部分应用程序的日志消息都写到该日志文件中，故障诊断的首要步骤即为检查该文件。标准的Hadooplog4j配置采用日常滚动文件追加方式（daily rolling file appender)来循环管理日志文件。系统不自动删除过期的日志文件，而是留待用户定期删除或存档，以节约本地磁盘空间。
+- 第二类日志文件后缀名为.out，记录标准输出和标准错误日志。由于Hadoop使用log4J记录日志，所以该文件通常只包含少量记录，甚至为空。重启守护进程时，系统会创建一个新文件来记录此类日志。系统仅保留最新的5个日志文件。旧的日志文件会附加一个介于1和5之间的数字后缀，5表示最旧的文件。
+
+日志文件的名称（两种类型）包含运行守护进程的用户名称、守护进程名称和本地主机名等信息。例如`hadoop-hdfsdatanode-ip-10-45-174-112.log.2014-09-20`就是一个日志文件的名称。这种命名方法保证集群内所有机器的日志文件名称各不相同，从而可以将所有日志文件存到一个目录中。
+
+日志文件名称中的“用户名称”部分实际对应`hadoop-env.sh`方文件中的`HADOOP_IDENT_STRING`项。如果想采用其他名称，可以修改`HADOOP_IDENT_STRING`项。
+
+#### 4. SSH配置
+
+借助SSH协议，用户在主节点上使用控制脚本就能在(远程)工作节点上运行一系列指令。自定义SSH设置会带来诸多益处。例如，减小连接超时设定(使用ConnectTimeout选项)可以避免控制脚本长时间等待宕机节点的响应。当然，也不可设得过低，否则会导致繁忙节点被跳过。
+
+StrictHostKeyChecking也是一个很有用的SSH设置。设置为no会自动将新主机键加到已知主机文件之中。该项默认值是ask，提示用户确认是否已验证了“键指纹”(key fingemnnt)，因此不适合大型集群环境。
+
+在hadoop-env.sh文件中定义HADOOP_SSH_OPTS环境变量还能够向SSH传递更多选项。参考ssh和ssh-config使用手册，了解更多SSH设置。
