@@ -312,3 +312,211 @@ export HADOOP_LOG_DIR=/var/log/hadoop
 StrictHostKeyChecking也是一个很有用的SSH设置。设置为no会自动将新主机键加到已知主机文件之中。该项默认值是ask，提示用户确认是否已验证了“键指纹”(key fingemnnt)，因此不适合大型集群环境。
 
 在hadoop-env.sh文件中定义HADOOP_SSH_OPTS环境变量还能够向SSH传递更多选项。参考ssh和ssh-config使用手册，了解更多SSH设置。
+
+### 10.3.3 Hadoop守护进程的关键属性
+
+Hadoop的配置属性之多简直让人眼花缭乱。本节讨论对于真实的工作集群来说非常关键的一些属性(或至少能够理解默认属性的含义)，这些属性分散在Hadoop的站点文件之中，包括core-site.xml、hdfs-site.xml和yarn-site.xml。范例10-1、10-2和10-3分别列举了这些文件的典型实例。要想进一步了解Hadoop配置文件的格式，可参见6.1节。
+
+对于一个正在运行的守护进程，要想知道其实际配置，可以访问该进程的web服务器上的`/conf`页面，例如，`http://resource-manager-host:8088/conf`表示资源管理器当前的运行配置。该页面展示了守护进程正在运行的组合站点和默认配置文件，并给出了每个属性的来源文件。
+
+**范例10-1 典型的core-site.xml文件**
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<!--
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License. See accompanying LICENSE file.
+-->
+
+<!-- Put site-specific property overrides in this file. -->
+
+<configuration>
+	<property>
+        <name>fs.defaultFS</name>
+     	<value>hdfs://namenode</value>
+    </property>
+</configuration>
+```
+
+**范例10-2 典型的hdfs-site.xml**
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<!--
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License. See accompanying LICENSE file.
+-->
+
+<!-- Put site-specific property overrides in this file. -->
+
+<configuration>
+	<property>
+        <name>dfs.replication</name>
+        <value>1</value>
+    </property>
+  <property>
+      <!--namenode 节点数据（即元数据）的存放位置，可以指定多个目录实现容错，多个目录用逗号分隔-->
+    <name>dfs.namenode.name.dir</name>
+    <value>/disk1/hdfs/name,/remote/hdfs/name</value>
+	</property>
+  <property>
+        <!--datanode 节点数据（即数据块）的存放位置-->
+      <name>dfs.datanode.data.dir</name>
+      <value>/disk1/hdfs/data,/disk2/hdfs/data</value>
+  </property>
+  <property>
+      <name>dfs.namenode.checkpoint.dir</name>
+      <value>/disk1/hdfs/namesecondary,/disk2/hdfs/namesecondary</value>
+  </property>
+</configuration>
+```
+
+**范例10-3 典型的yarn-site.xml配置文件**
+
+```xml
+<?xml version="1.0"?>
+<!--
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License. See accompanying LICENSE file.
+-->
+<configuration>
+  
+  <property>
+    <name>yarn.resourcemanager.hostname</name>
+    <value>resourcemanager</value>
+  </property>
+  
+  <property>
+    <name>yarn.nodemanager.local-dirs</name>
+    <value>/disk1/nm-local-dir,/disk2/nm-local-dir</value>
+  </property>
+  
+	<property>
+        <!--配置 NodeManager 上运行的附属服务。需要配置成 mapreduce_shuffle 后才可以在 Yarn 上运行 MapReduce 程序。-->
+        <name>yarn.nodemanager.aux-services</name>
+        <value>mapreduce_shuffle</value>
+  </property>
+  
+  <proerty>
+    <name>yarn.nodemanager.resource.memory-mb</name>
+    <value>16384</value>
+  </proerty>
+  
+  <property>
+    <name>yarn.nodemanager.resource.cpu-vcores</name>
+    <value>16</value>
+  </property>
+</configuration>
+```
+
+#### 1. HDFS
+
+运行HDFS需要将一台机器指定为namenode。在本例中，配置文件`core-site.xml`的 属性`fs.defaultFS`描述HDFS文件系统的URI，其主机是namenode的主机名称或IP地址，端口是namenode监听RPC的端口。如果没有指定，那么默认端口是8020。
+
+属性`fs.defaultFS`也指定了默认文件系统，可以解析相对路径。相对路径的长度更短，使用更便捷(不需要了解特定namenode的地址)。假设默认文件系统如范例10.1所示， 相对URI`/a/b`解析为`hdfs://namenode/a/b`。
+
+当用户在运行HDFS时，鉴于`fs.defaultFS`指定了HDFS的namenode和默认文件系统，则HDFS必须是服务器配置的默认文件系统。值得注意的是，为了操作方便，也允许在客户端配置中将其他文件系统指定为默认文件系统。例如，假设系统使用HDFS和S3两种文件系统，则可以在客户端配置中将任一文件系统指定为默认文件系统。这样的话，就能用相对URI指向默认文件系统，用绝对URI指向其他文件系统。
+
+还有一些HDFS的配置选项，包括namenode和datanode存储目录的属性。属性项`dfs.namenode.name.dir`指定一系列目录来供namenode存储永久性的文件系统元数据(编辑日志和文件系统镜像)。这些元数据文件会同时备份在所有指定目录中。通常情况下，通过配置`dfs.namenode.name.dir`属性可以将namenode元数据写到一两个本地磁盘和一个远程磁盘(例如NFS挂载目录)之中。这样的话，即使本地磁盘发生故障，甚至整个namenode发生故障，都可以恢复元数据文件并且重构新的namenode。辅助namenode只是定期保存namenode的检查点，不维护namenode的最新备份。
+
+属性`dfs.datanode.data.dir`可以设定datanode存储数据块的目录列表。`dfs.namenode.name.dir`描述一系列目录，其目的是支持namenode进行冗余备份。虽然`dfs.datanode.data.dir`也描述了一系列目录，但是其目的是使datanode循环地在各个目录中写数据。因此，为了提高性能，最好分别为各个本地磁盘指定一个存储目录。这样，数据块跨磁盘分布，针对不同数据块的读操作可以并发执行，从而提升读取性能。
+
+------
+
+**注意：**为了充分发挥性能，需要使用noatime选项挂载磁盘。该选项意味着执行读操作时，所读文件的最近访问时间信息并不刷新，从而显著提高性能。
+
+文件挂载时设置这两个属性可以明显提高性能。默认情况下，Linux ext2/ext3 文件系统在文件被访问、创建、修改时会记录下文件的时间戳，比如：文件创建时间、最近一次修改时间和最近一次访问时间。如果系统运行时要访问大量文件，关闭这些操作，可提升文件系统的性能。Linux 提供了 noatime 这个参数来禁止记录最近一次访问时间戳。
+
+------
+
+最后，还需要指定辅助namenode存储文件系统的检查点的目录。属性`dfs.namenode.checkpoint.dir`指定一系列目录来保存检查点。与namenode类似，检查点镜像文件会分别存储在各个目录中，以支持冗余备份。表10-2总结了HDFS的关键配置属性。
+
+​													**表10-2 HDFS守护进程的关键属性**
+
+| 属性名称                    | 类型                 | 默认值                                     | 说明                                                         |
+| --------------------------- | -------------------- | ------------------------------------------ | ------------------------------------------------------------ |
+| fs.defaultFS                | URI                  | file:///namenode:port                      | 默认文件系统。URI定义主机名称和namenode的RPC服务器工作的端口号，默认值是8020。本属性保存在core-site.xml中 |
+| dfs.namenode.name.dir       | 以逗号分隔的目录名称 | file:///${hadoop.tmp.dir}/dfs/name         | namenode存储永久性元数据的目录列表。namenode在列表上的各个目录中均存放相同的元数据文件(冗余备份)。 |
+| dfs.datanode.data.dir       | 以逗号分隔的目录名称 | file://${hadoop.tmp.dir}/dfs/data          | datanode存放数据块的目录列表。各个数据块分别存放于某一个目录中。 |
+| dfs.namenode.checkpoint.dir | 以逗号分隔的目录名称 | file://${hadoop.tmp.dir}/dfs/namesecondary | 辅助namenode存放检查点的目录列表。在所列每个目录中均存放一份检查点文件的副本 |
+
+#### 2. YARN
+
+为了运行YARN，要指定一台机器作为资源管理器。最简单做法是将属性`yarn.resourcemanager.hostname`设置为用于运行资源管理器的机器主机名或IP地址。资源管理器服务器地址基本都可以从属性获得，例如，`yarn.resourcemanager.address`的格式为主机—端口对，`yarn.resourcemanager.hostname`表示默认主机。在MapReduce客户端配置中，需要通过RPC连接到资源管理器时，会用到这个属性。
+
+在执行MapReduce作业的过程中所产生的中间数据和工作文件被写到临时本地文件之中。由于这些数据包括Map任务输出数据，数据量可能非常大，因此必须保证YARN容器本地临时存储空间(`yarn.nodemanager.local-dirs`属性设置)的容量空间足够大。`yarn.nodemanager.local-dirs`属性使用一个逗号分隔的目录名称列表，最好将这些目录分散到所有本地磁盘，以提升磁盘I/O操作的效率。通常情况下，YARN本地存储会使用与datanode块存储相同的磁盘和分区(但是不同的目录) 。如前所述，datanode数据块存储目录由dfs.datanode.data.dir属性项指定。
+
+与MapReduce1不同，YARN没有tasktracker，它依赖于shuffle句柄将map任务的输出送给reduce任务。shuffle句柄是长期运行在节点管理器的附加服务。由于YARN是一个通用目的的服务，因此要通过将`yarn.xml`文件中的`yarn.nodemanager.aux-services`属性设置为`mapreduce_shuffle`来显式启用MapReduce的shuffle句柄。表10-3总结了YARN的关键配置属性。
+
+​													**表10-3 YARN守护进程的关键属性**
+
+| 属性名称                            | 类型                | 默认值                         | 说明                                                         |
+| ----------------------------------- | ------------------- | ------------------------------ | ------------------------------------------------------------ |
+| yarn.resourcemanager.hostname       | 主机名              | 0.0.0.0                        | 运行资源管理器的机器主机名                                   |
+| yarn.resourcemanager.address        | 主机名和端口号      | ${yarn.hostname}:8032          | 运行资源管理器的RPC服务器的主机名和端口                      |
+| yarn.nodemanager.local-dirs         | 逗号分隔的 目录名称 | ${hadoop.tmp.dir}/nm-local-dir | 目录列表，节点管理器允许容器将中间数据存于其中。当应用结束时，数据被清除 |
+| yarn.nodemanager.aux-services       | 逗号分隔的 服务名称 |                                | 节点管理器运行的附加服务列表。每项服务由属性所定义的类实现。默认情况下，不指定附加服务 |
+| yarn.nodemanager.resource.memorymb  | int                 | 8192                           | 节点管理器运行的容器可以分配到的物理内存容量（单位是MB)      |
+| yarn.nodemanager.vmem-pmem-ratio    | float               | 2.1                            | 容器所占的虚拟内存和物理内存之比。该值指示了虚拟内存的使用可以超过所分配内存的量 |
+| yarn.nodemanager.resource.cpuvcores | int                 | 8                              | 节点管理器运行的容器可以分配到的CPU核数目                    |
+
+#### 3. YARN和MapReduce中的内存设置
+
+与MapReduce1的基于slot的模型相比，YARN以更精细化的方式来管理内存。YARN不会立刻指定一个节点上可以运行的map和reduceslot的最大数目，相反，它允许应用程序为一个任务请求任意规模的内存(在限制范围内)。在YARN管理模型中，节点管理器从一个内存池中分配内存，因此，在一个特定节点上运行的任务数量取决于这些任务对内存的总需求量，而不简单取决于固定的slot数量。
+
+计算为一个运行容器的节点管理器分配多少内存要取决于机器上的物理内存。每个Hadoop守护进程使用1000MB内存，因此需要2000MB内存来运行1个datanode和1个节点管理器。为机器上运行的其他进程留出足够的内存后，通过将配置属性`yarn.nodemanager.resource.memory.mb`设置为总分配量(单位是MB)，剩余的内存就可以被指定给节点管理器的容器使用了。默认是8192MB，对于大多数设置来说太低了。
+
+接下来是确定如何为单个作业设置内存选项。有两种主要控制方法：
+
+- 控制YARN分配的容器大小；
+- 控制容器中运行的Java进程堆大小。
+
+------
+
+**注意：**MapReduce作业的内存控制都由客户端在作业中配置。YARN设置是集群层面的设置，客户端不能更改。
+
+------
+
+容器大小由属性`mapreduce.map.memory.mb`和`mapreduce.reduce.memory.mb`决定，默认值都为1024MB。application master会使用这些设置以从集群中请求资源；此外，节点管理器也会使用这些设置来运行、监控任务容器。Java进程的堆大小由mapred.child.java.opts设置，默认是200MB。也可以单独为map和reduce任务设置Java选项（参见表10-4)。
+
+​										**表10-4 MapReduce作业内存属性(由客户端设置)**
+
+| 属性名称                   | 类型   | 默认值   | 说明                                                         |
+| -------------------------- | ------ | -------- | ------------------------------------------------------------ |
+| mapreduce.map.memory.mb    | int    | 1024     | map容器所用的内存容最                                        |
+| mapreduce.reduce.memory.mb | int    | 1024     | reduce容器所用的内存容量                                     |
+| mapred.child.java.opts     | String | -Xmx200m | JVM选项，用于启动运行map和reduce任务的容器进程。除了用于设置内存，该属性还包括JVM属性设置，以支持调试 |
+| mapreduce.map.java.opts    | String | -Xmx200m | JVM选项，针对运行map任务的子进程                             |
+| mapreduce.reduce.java.opts | String | -Xmx200m | JVM选项，针对运行reduce任务的子进程                          |
+
+例如，假设`mapred.child.java.opts`被设为`-Xmx 800m`，`mapreduce.map.java.opts`被设置为默认1024MB，当map任务启动时，节点管理器会为该任务分配一个1024MB的容器(在该任务运行期间，节点管理器的内存池也会相应降低1024MB)，并启动配置为最大堆为800MB的任务JVM。注意，JVM进程内存的开销将比堆的规模大，开销依赖于所使用的本地库(native libraries)、永久生成空间(permanent generation space)等因素。需要注意的是，JVM进程(包括它创建的任何进程，如Streaming)所使用的物理内存必须不超出分配给它的内存大小(1024MB)。如果一个容器使用的内存超过所分配的量，就会被节点管理器终止，并标记为失败。
+
