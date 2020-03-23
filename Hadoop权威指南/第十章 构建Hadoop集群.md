@@ -520,3 +520,142 @@ Hadoop的配置属性之多简直让人眼花缭乱。本节讨论对于真实�
 
 例如，假设`mapred.child.java.opts`被设为`-Xmx 800m`，`mapreduce.map.java.opts`被设置为默认1024MB，当map任务启动时，节点管理器会为该任务分配一个1024MB的容器(在该任务运行期间，节点管理器的内存池也会相应降低1024MB)，并启动配置为最大堆为800MB的任务JVM。注意，JVM进程内存的开销将比堆的规模大，开销依赖于所使用的本地库(native libraries)、永久生成空间(permanent generation space)等因素。需要注意的是，JVM进程(包括它创建的任何进程，如Streaming)所使用的物理内存必须不超出分配给它的内存大小(1024MB)。如果一个容器使用的内存超过所分配的量，就会被节点管理器终止，并标记为失败。
 
+YARN有一个最小和最大内存分配量。默认情况下，最小内存分配量是1024MB(由`yarn.scheduler.minimum-allocation-mb`设置)，最大分配量是8192MB(由`yarn.scheduler.maximum-allocation-mb`设置）。
+
+容器还需要满足对虚拟内存的限制，如果容器所使用的虚拟内存量超出预定系数和所分配的物理内存的乘积，则节点管理器也会终止进程。该系数由`yarn.nodemanager.vmem-pmem-ratio`属性指定，默认值是2.1。在前面的例子中，虚拟内存规模的上限值为2150MB，即2.1×1024MB。
+
+除了使用参数来配置内存使用之外，还可以使用MapReduce任务计数器来监控任务执行过程中的真实内存消费量。这些计数器包括：`PHYSICAL-EMORY-BYTES`、`VIRTUAL_MEMORY_BYTES`和``COMMITTED_HEAP_BYTES`(参见表9-2），分别描述了在某一时刻各种内存的使用情况，因此也适用于在任务尝试期间的观察。
+
+Hadoop也提供了一些设置方法，用于控制MapReduce操作的内存使用。这些设置可以针对每个作业进行，详情参见7.3节。
+
+#### 4. YARN和MapReduce中的CPU设置
+
+出了内存外，YARN将CPU的使用作为一种资源进行管理，应用程序可以申请需要的核数量。通过属性`yarn.nodemanager.resource.cpuvcores`可以设置节点管理器分配给容器的核数量。应该设置为机器的总核数减去机器上运行的每个守护进程(datanode，datanodeManager和其他长期运行的进程)占用的核数(每个进程占用1个核)。
+
+通过设置属性`mapreduce.map.cpu.vcores`和`mapreduce.reduce.cpu.vcores`，MapReduce作业能够控制分配给map和reduce容器的核数量。两者的默认值均为1，适合通常的单线程MapReduce任务，因为这些任务使用单核就足够了。
+
+------
+
+**注意：**当调度过程中对核数量进行掌控后(当机器没有空余核时，一个容器将不会分到核)，节点管理器默认情况下将不会限制运行中的容器对CPU的实际使用，这意味着一个容器可能会出现滥用配額的情况，例如使用超额的CPU，而这可能会饿死在同一主机上运行的其他容器。YARN提供了基于Linux的cgroup技术的、强制实施CPU限制的手段。为此，节点管理器的容器执行类`yarn.nodemanager.containerexecutor.class`必须被设置为`LinuxContainerExecutor`类，并且必须将`LinuxContainerExecutor`类配置为使用cgroup，详情查阅`under yarn.nodemanager.linux-container-executor`的属性介绍。
+
+------
+
+### 10.3.4 Hadoop守护进程地址和端口
+
+Hadoop守护进程一般同时运行RPC和HTTP两个服务器，RPC服务(表10-5)支持守护进程间通信，HTTP服务器则提供与用户交互的Web界面(表10-6所示)。需要分别为各个服务器配置网络地址和监听端口。端口号0表示服务器会选择一个空闲的端口号：但由于这种做法与集群范围的防火墙策略不兼容，所以通常不推荐。
+
+​													**表10-5 RPC服务器属性**
+
+| 属性名称                                     | 默认值               | 说明                                                         |
+| -------------------------------------------- | -------------------- | ------------------------------------------------------------ |
+| fs.defaultFS                                 | file:///             | 设为一个HDFS的URI时，该属性描述namenode的RPC服务器地址和端口。如果不指定，则默认的端口号是8020 |
+| dfs.namenode.rpc-bind-host                   |                      | namenode的RPC服务器将绑定的地址。如果没有设置（默认情况），绑定地址由fs.defaultFS决定。**可以设为0.0.0.0，使得namenode可以监听所有接口** |
+| dfs.datanode.ipc.address                     | 0.0.0.0:50020        | datanode的RPC服务器地址和端口                                |
+| mapreduce.jobhistory.address                 | 0.0.0.0:10020        | 作业历史服务器的RPC服务器地址和端口，客户端(一般在集群外部)用于查询作业历史 |
+| mapreduce.jobhistory.bind-host               |                      | 作业历史服务器的RPC和HTTP服务器将绑定的地址                  |
+| yarn.resourcemanager.hostname                | 0.0.0.0              | 资源管理器运行所在的机器主机名。以下缩写为${yrm.hostname}    |
+| yarn.resourcemanager.bind-host               |                      | 资源管理器的RPC和HTTP服务器将绑定的地址                      |
+| yarn.resourcemanager.address                 | ${yrm.hostname}:8032 | 资源管理器的RPC服务器地址和端口。客户端(一般在集群外部)通过它与资源管理器通信 |
+| yarn.resourcemanager.admin.address           | ${yrm.hostname}:8033 | 资源管理器的adminRPC服务器地址和端口。admin客户端(由yarn rmadmin调用，一般在集群外部)借此与资源管理器通信 |
+| yarn.resourcemanager.schduler.address        | ${yrm.hostname}:8030 | 资源管理器的调度器RPC服务器地址和端口。application master(在集群内部)借此与资源管理器通信 |
+| yarn.resourcemanager.resourcetracker.address | ${yrm.hostname}:8031 | 资源管理器的resourcetracker的RPC服务器地址和端口。节点管理器(在集群内)借此与资源管理器通信 |
+| yarn.nodemanager.hostname                    | 0.0.0.0              | 节点管理器运行所在的机器的机名。以下缩写为${ynm.hostname)    |
+| yarn.nodemanager.bind-host                   |                      | 节点管理器的RPC和HTTP服务器将绑定的地址                      |
+| yarn.nodemanager.address                     | ${ynm.hostname}:0    | 节点管理器的RPC服务器地址和端口。application master(在集群内部）借此与节点管理器通信 |
+| yarn.nodemanager.localizer.address           | ${ynm.hostname}:8040 | 节点管理器的localizer的RPC服务器地址和端                     |
+
+​												**表10-6 HTTP服务器的属性**
+
+| 属性名称                            | 默认值               | 说明                                                         |
+| ----------------------------------- | -------------------- | ------------------------------------------------------------ |
+| dfs.namenode.http-address           | 0.0.0.0:50070        | namenode的HTTP服务器地址和端口                               |
+| dfs.namenode.http-bind-host         |                      | namenode的HTTP服务器将绑定的地址                             |
+| dfs.namenode.secondary.http-address | 0.0.0.0:50090        | 辅助namenode的HTTP服务器地址和端口                           |
+| dfs.datanode.http.address           | 0.0.0.0:50075        | datanode的HTTP服务器地址和端口。注意，属性名和namenode的属性名不一样 |
+| mapreduce.jobhistory.webapp.address | 0.0.0.0:19888        | MapReduce作业历史服务器地址和端口。该属性在mapred-site.xml文件中设置 |
+| mapreduce.shuffle.port              | 13562                | Shuffle句柄的HTTP端口号·。map输出结果服务，但不是用户可访问的webUI。该属性在mapred-site.xml文件中设置 |
+| yarn.resourcemanager.webapp.address | ${yrm.hostname}:8088 | 资源管理器的HTTP服务器地址和端口                             |
+| yarn.nodemanager.webapp.address     | ${ynm.hostname}:8042 | 节点管理器的HTTP服务器地址和端口                             |
+
+通常，用于设置服务器RPC和HTTP地址的属性负担着双重责任：第一，决定了服务器将绑定的网络接口，第二，客户端或集群中的其他机器使用它们连接服务器。例如，节点管理器使用`yarn.resourcemanager.resource-tracker.address`属性来确定它们的资源管理器的地址。
+
+用户通常希望服务器同时可以绑定多个网络接口，将网络地址设为0.0.0.0可以达到这个目的，但是却破坏了上述第二种情况，因为这个地址无法被客户端或集群中的其他机器解析。一种解决方案是将客户端和服务器的配置分开，但是更好的一种方案为是服务器绑定主机，通过将`yarn.resourcemanager.hostname`设定为主机名或IP地址，`yarn.resourcemanager.bind-host`设定为0.0.0.0，可以确保资源管理器能够与机器上所有地址绑定，且同时能为节点管理器和客户端提供可解析的地址。
+
+出了RPC服务器之外，多个datanode还运行TCP/IP服务器以支持块传输，服务器地址和端口号由属性`dfs.datanode.address`设定，默认值是0.0.0.0:50010。
+
+有多个网络接口时，还可以为各个datanode选择某一个网络接口作为IP地址(针对HTTP和RPC服务器)，相关属性是`dfs.datanode.dns.interface`，默认值是default，表示使用默认的网络接口。可以修改该属性项来变更网络接口的地址（例如，eth0)。
+
+### 10.3.5 Hadoop其他属性
+
+本节讨论其他一些可能会用到的Hadoop属性。
+
+#### 1. 集群成员
+
+为了便于在将来添加或移除节点，可以通过文件来指定一些允许作为datanode或datanode Manager加人集群的经过认证的机器。属性`dfs.hosts`记录允许作为datanode加人集群机器列表，属性`yarn.resourcemanager.nodes.include-path`记录允许作为节点管理器加人集群的机器列表。与之相对应的，属性`dfs.hosts.exclude`和`yarn.resourcemanager.nodes.exclude-path`所指定的文件分别包含待解除的机器列表。更深人的讨论可以参见11.3.2节。
+
+#### 2. 缓冲区大小
+
+Hadoop使用一个4KB(4096字节)的缓冲区辅助I/O操作，对于现代硬件和操作系统来说，这个容量实在过于保守了。增大缓冲区容量会显著提高性能，例如128KB(131072字节）更常用。可以通过`core-site.xml`文件中的`io.file.buffer.size`属性来设置缓冲区大小(以字节为单位)。
+
+#### 3. HDFS块大小
+
+在默认情况下，HDFS块大小是128MB，但是需要集群把块大小设置为更大(如256MB，268435456字节)，以降低namenode的内存压力，并向mapper传输更多数据。通过`hdfs-site.xml`文件中的`dfs.blocksize`属性设置块的大小(以字节为单位)。
+
+#### 4. 保留的存储空间
+
+默认情况下，datanode能够使用存储目录上的所有闲置空间。如果计划将部分空间留给其他应用程序（非HDFS)，则需要设置dfs.datanode.du.reserved属性来指定待保留空间大小(以字节为单位）。
+
+#### 5. 回收站
+
+Hadoop文件系统也有回收站设置，被删除的文件并未被真正删除，仅只转移到回收站中(一个特定的文件夹)中。回收站中的文件在永久被删除之前至少保留一段时间。由`core-site.xml`文件中的`fs.trash.interval`属性(以分钟为单位)设置。默认情况下，该属性的值是0，表示回收站特性无效。
+
+与许多操作系统类似，Hadoop的回收站设施是用户级特性，即只有文件系统shell直接删除的文件才会被放在回收站中，用程序删除的文件会被直接删除。当然，也有例外的情况，如使用Trash类。构造一个Trash实例，调用moveToTrash()方法会把指定路径的文件移到回收站中。如果操作成功，该方法返回一个值；否则，如果回收站特性未被启动，或该文件已经在回收站中，该方法返回false。当回收站特性被启用时，每个用户都有独立的回收站目录，即：home目录下的.Trash目录。恢复文件也很简易：在.Trash的子目录中找到文件，并将其移出.Trash目录。
+
+当回收站特性被启用时，每个用户都有独立的回收站目录，即：home目录下的`.Trash`目录。恢复文件也很简易：在`.Trash`的子目录中找到文件，并将其移出`.Trash`目录。
+
+HDFS会自动删除回收站中的文件，但是其他文件系统并不具备这项功能。对于这些文件系统，必须定期手动删除。执行以下命令可以删除已在回收站中超过最小时限的所有文件：
+
+```bash
+％hadoop fs -expunge
+```
+
+Trash类的expunge()方法也具有相同的效果。
+
+#### 6. 作业调度
+
+在针对多用户的设置中，可以考虑升级作业调度器队列配置，以反映在组织方面的需求。例如：可以为使用集群的每个组设置一个队列。详见4.3节中对作业调度的讨论。
+
+#### 7. 慢启动reduce
+
+在默认情况下，调度器会一直等待，直到该作业的5%的map任务已经结束了才会调度reduce任务。对于大型作业来水，这可能会降低集群的利用率，因为在等待map任务执行完毕的过程中，占用了reduce容器，可以将`mapreduce.job.reduce.slowstart.completedmaps`的值设得更大，例如0.80(80％)，能够集群提升吞吐率。
+
+#### 8. 短回路本地读
+
+当从HDFS读取文件时，客户端联系datanode，然后数据通过TCP连接发送给客户端。如果正在读取的数据块和客户端在同一节点上，那么客户端绕过网络从磁盘上直接读取数据效率会更高，这称作 **短回路本地读(short -circuit local read)**，这种方式能够让应用程序如HBase执行效率更高。
+
+将属性`dfs.client.read.shortcircuit`设置为true，即可启动短回路本地读。读操作基于Unix域套接字实现，在客户端和datanode之间通信使用了一个本地路径。该路径使用属性`dfs.domain.socket.path`进行设置，且必须是一条仅有datanode用户(典型的为hdfs)或root用户能够创建的路径，如：/var/run/hadoop-hdfs/dn_socket。
+
+## 10.4 安全性
+
+早起版本的Hadoop假定HDFS和MapReduce集群运行在安全环境中，由一组相互合作的用户所操作，因而访问控制措施的目标是防止偶然的数据丢失，而非阻止非授权的数据访问。例如，HDFS中的文件许可模块会阻止用户由于程序漏洞而损坏整个文件系统，也会阻止运行不小心输人的hadoop fs -rmr /指令，但却无法阻止某个恶意用户假冒root身份来访问或删除集群中的某些数据。
+
+从安全角度分析，Hadoop缺乏一个安全的认证机制，以确保正在操作集群的用户恰是所声称的安全用户。Hadoop的文件许可模块只提供一种简单的认i证机制来决定各个用户对特定文件的访问权限。例如，某个文件的读杖限仅开放给某一组用户，从而阻止其他用户组的成员读取该文件。然而，这种认证机制仍然远远不够，恶意用户只要能够通过网络访问集群，就有可能伪造合法身份来攻击系统。
+
+包含个人身份信息的据（例如终端用户的全名或IP地址腓常敏感。一般情况下，需要严格限制组织内部的能够访问这类信息的员工数。相比之下，敏感性不强（或匿名化）的数据则可以开放给更多用户。如果把同一集群上的数据划分不同的安全级别，在管理上会方便很多，且低安全级别的数据也能够被广泛共享。然而，为了迎合数据保护的常规需求，共享集群的安全认证是不可或缺的。
+
+雅虎公司在2009年就遇到了该难题，因此组织了一个工程师团队来实现Hadoop的安全认证。这个团队提出了一个方案：用Kerberos(一个成熟的开源网络认证胁议）实现用户认证，Hadoop不直接管理用户隐私，而Kerberos也不关心用户的授权细节。换句话说，Kerberos的职责在于鉴定登陆账号是否是所声称的用户，Hadoop决定该用户用户多少权限。
+
+### 10.4.1 Kerberos与Hadoop
+
+从宏观角度来看，使用Kerberos时，一个客户端要经过三个步骤才可以获得服务。在各个步骤，客户端需要和一个服务器交换报文。
+
+1. **认证**。客户端向认证服务器发送一条报文，并获取一个含时间戳的票据授予票据(Ticket-GrantingTicket，TGT)。
+2. **授权**。客户端使用TGT向票据授予服务器(Ticket-GrantingServer，TGS)请求一个服务票据。
+3. **服务请求**。客户端向服务器出示服务票据，以证实自己的合法性。该服务器提供客户端所需服务，在Hadoop应用中，服务器可以是namenode或资源管理器。
+
+同时，认证服务器和票据授予服务器构成了密钥分配中心(Key Distribution Center, KDC)，整个过程如图10-2所示。
+
+![](./img/10-2.jpg)
+
+​															**图10-2 Kerberos票据交换协议的三个步骤**
+
