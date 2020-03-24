@@ -659,3 +659,152 @@ Trash类的expunge()方法也具有相同的效果。
 
 ​															**图10-2 Kerberos票据交换协议的三个步骤**
 
+授权和服务请求步骤并非用户级别的行为：客户端会代替用户来执行这些步骤，但是认证步骤通常需要由用户调用kinit命令执行，该过程会提示用户输入密码，需要指出的是，这并不意味着每次运行一个作业或访问HDFS的时候都会强迫用户键人密码，因为用户所申请到的TGT具备一定的有效期。TGT有效期的默认值是10个小时(可以更新至一周)。更通用的做法是采用自动认证：即在登录操作系统的时候自动执行认证操作，从而只需单次录(singlesign-on)到Hadoop。
+
+如果用户需期望被提示输入密码(例如，运行一个无人值守的MapReduce作业)，则可以使用ktutil命令创建一个Kerberos的keytab文件，该文件保存了用户密码并且可以通过-t选项应用于kinit命令。
+
+**示例**
+
+下面来看一个例子。首先，将`core-site.xml`文件中的`hadoop.security.authentication`属性项设置为kerberos，启用Kerberos认证。该属性项的默认是simple，表示将采用传统的向后兼容(但是不安全)方式，即利用操作系统用户名称来决定登录者的身份。
+
+其次，还需要将同一文件中的`hadoop.security.authorization`属性项设置为true，以启用服务级别的授权。可以配置`hadoop-policy.xml`文件中的访问控制列表（ACL）以决定哪些用户和组能够访问哪些Hadoop服务。这些服务在协议级别定义，包括针对MapReduce作业提交的服务、针对namenode通信的服务等。默认情况下，各个服务的ACL都被设置为*，表示所有用户能够访问所有服务。但在现实情况下，还是有必要充分考虑ACL策略，控制访问服务的用户和组的范围。
+
+ACL的格式很简单，前一段是以逗号隔开的用户名称列表，后一段是以逗号隔开的组名列表，两段间都以空格隔开。例如：ACL片段`preston,howard,directors,inventors`会将某服务的访问权限授予用户person或用户howard，或组directors或组inventors。
+
+当Keberos认证启用后，以下输出内容显示了从本地复制一个文件到HDFS中时系统反馈的结果。
+
+```bash
+% hadoop fs -put quangle.txt
+
+10/07/03 15:44:58 WARN ipc.Client: Exception encountered while connecting to the
+server: javax.security.sasl.SaslException: GSS initiate failed [Caused by GSSEx
+ception: No valid credentials provided (Mechanism level: Failed to find any Ker beros
+tgt)]
+Bad connection to FS. cannand aborted, exception: Call to lcx^lhost/127.0.0.1:80
+20 failed on local exception: java.io.IOException: javax.security.sasl.SaslExcep
+tion: GSS initiate failed [Caused by GSSException: No valid credentials provided
+(Mechanism level: Failed to find any Kerberos tgt)]
+```
+
+用于用户没有Kerbeos票据，所以上述操作失败。用户可以用kinit命令指向KDC认证，并获得一张票据：
+
+```sh
+%kinit
+Password for hadoop-user@LOCALDOAMIN:passowrd
+% hadoop fs -put quangle.txt
+% hadoop fs -stat %n quangle.txt
+quangle.txt
+```
+
+现在，可以看到文件已成功写人HDFS。注意，由于Kerberos票据的有效期是10小时，所以尽管执行的是两条文件系统指令，但实际上只需调用一次kinit命令。另外，klist命令能查看票据的过期时间，kdestroy指令可销毁票据。在获取票据之后，各项工作与平常无异。
+
+#### 10.4.2 委托令牌
+
+在诸如HDFS或MapReduce的分布式系统中，客户端和服务器之间频繁交互，且每次交互均需认证。例如，一个HDFS读操作不仅会与namenode多次交互、还会与一个或多个datanode交互。如果在一个高负载集群上采用三步骤Kerberos票据交换协议来认证每次交互，则会对KDC造成很大压力。因此，Hadoop使用**委托令牌**来支持后续认证访问，避免了多次访问KDC。委托令牌的创建和使用过程均由Hadoop代表用户透明地进行，因而用户执行kinit命令登录之后，无需再做额外的操作。当然，了解委托令牌的基本用法仍然是有必要的。
+
+委托令牌由服务器创建(这里指namenode)，可以视为客户端和服务器之间共享的一个密文。当客户端首次通过RPC访问namenode时，客户端并没有委托令牌，因此需要利用Kerberos进行认证。之后，客户端从namenode获取一个委托令牌。在后续RPC调用中，客户端只需要出示委托令牌，namenode就能验证委托令牌的真伪(因为该命令是由namenode使用密钥创建的)，并因此向服务器认证客户端的身份。
+
+客户端需要使用一种特殊类型的委托令牌来执行HDFS块操作，称为 **块访问令牌(Block access token)**，当客户端向namenode发出元数据请求时，namenode创建相应的块访问令牌并发送回客户端。客户端使用块访问命令向datanode认证自己的访问权限。由于namenode会和datanode分享它创建块访问令牌时使用的密钥(通过心跳消息传送)，datanode也能够验证这些块访问令牌。这样的话，仅当客户端已经从namenode获取了针对某一个HDFS块的块访问令牌时，才可以访问该块。相比之下，在不安全的Hadoop系统中，客户端只需要知道块ID就能访问一个块了，可以通过将`dfs.block.access.token.enable`的值设置为true来启用块访问令牌特性。
+
+在MapReduce中，application master共享HDFS中的作业资源和元数据(例如：JAR文件，输入分片和配置文件)。用户代码运行在节点管理器上，并可以访问HDFS上的文件(该过程在7.1节中介绍过)。在作业运行过程中，这些组件使用委托令牌访问HDFS，作业结束时，委托令牌失效。
+
+默认的HDFS实例会自动获得委托令牌，但是若一个作业试图访问其他HDFS作业集群，则用户必须将`mapreduce.job.hdfs-servers`作业属性设置为一个由逗号隔开的HDFS URI列表，才能够获取相应的委托令牌。
+
+### 10.4.3 其他安全性改进
+
+Hadoop已经全面强化了安全措施，以阻止用户在未授权的情况下访问资源，一些显著的变化如下：
+
+- 任务可以由提交作业的用户以操作系统账号启动运行，而不一定要运行节点管理器的用户启动。这意味着，在这种情况下，可以借助操作系统来隔离正在运行的任务，使它们之间无法相互传送指令(例如，终止其他用户的任务)，这样的话，诸如任务数据等本地信息的隐私即可通过本地文件系统的安全性得到保护。
+
+	要启用这项特性，需要将`yarn.nodemanager.containerexecutor.class`设为`org.apache.hadoop.yarn.server.nodemanager.LinuxContainerExecutoro`。此外，管理员还需确保各用户在集群的每个节点上都已经分配帐号(一般用LDAP)。
+
+- 当任务由提交作业的用户启动运行时，分布式缓存(参见9.4.2节)是安全的：把所有用户均可读的文件放在贡献缓存中(默认的非安全方式)，把其他文件放在私有缓存中，仅限拥有者读取。
+
+- 用户只能查看和修改自己的作业，无法操控他人的作业。需要将`mapreduce.cluster.acls.enabled`属性项设为true。另外，mapreduce.job.acl-view-job和mapreduce.job.acl-modify-job属性分别对应一个逗号分隔的用户列表，描述能够查看或修改指定作业的所有用户。
+
+- shuffle是安全的，可以阻止恶意用户请求获取其他用户的map输出。
+
+- 正确配置之后，可以阻止恶意的辅助namenode、datanode或节点管理器加人集群，从而破坏集群中的数据。这可以通过要求master节点对试图与之连接的守护进程进行认证来实现。
+
+- 为了启用该特性，需要使用先前由ktutil命令创建的keytab文件来配置Hadoop。以datanode为例，首先，把`dfs.datanode.keytab.file`属性设置为keytab文件名称；其次，把dfs.datanode.kerberos.principal属性设置为要用的datanode用户名称；最后，把hadoop-policy.xml文件中security.datanode.protocol.acl属性设置为datanode的用户名称，以设置DataNodeProtocol的ACL。DatanodeProtocoI是datanode用于和namenode通信的协议类。
+
+- datanode最好运行在特权端口（端口号小于1024），使客户端确信它是安全启动的。
+
+- 任务只与其父application master通信，从而阻止攻击者经由其他用户的作业获取MapReduce数据。
+
+- Hadoop的多个不同部件都提供了配置属性以支持网络数据加密，包括RPC(hadoop.rpc.protection)，HDFS块传输(dfs.encrypt.data.transfer)、MapReduce shume(mapreduce.shuffle.ssl.enabled)和UI(hadokop.ssl.enabled)。并且，在数据休息期间对数据的加密也是持续进行的，例如，通过这种方式，HDFS块能够以加密方式进行存储。
+
+## 10.5 利用基准评测程序测试Hadoop集群
+
+集群是否已被正确建立？这个问题最好通过实验来回来：运行若干个作业，并确信获得了预期的结果。基准评测程序能获得满意的测试结果，用户可以拿结果数据和其他集群做比较，以检测新集群是否达到预期效果。此外，还可以据此调整集群设置以优化整体性能。这点一般通过监控系统实现（参见11.2节），用户可以监测集群中的资源使用情况。
+
+为了获得最佳评测结果，最好不要在运行基准评测程序时还同时运行其他任务。实际上，在集群人役之前进行评测最为合适，此时用户尚未对集群有依赖性。旦用户已经依赖集群执行常规性作业，想要找到集群完全空闲的时间就非常困难了(除非和所有其他用户协商一个停止服务的时间段)。总而言之，基准评测程序最好在此之前就执行。
+
+实践表明，硬盘驱动器故障是新系统最常见的硬件故障。通过运行含有高强度I/O操作的基准砰测程序，例如即将提到的基准i平测程序，就能在系统正式上线前对集群做“烤机”测试。
+
+### 10.5.1 Hadoop基准评测程序
+
+Hadoop自带若干基准评测程序，安装开销小、运行方便。基准评测程序打包为一个名为tests.jar的文件，经无参数解压缩之后，就可以获取文件列表和说明文档：
+
+```sh
+％hadoop jar $HADOOP_HOME/share/hadoop/mapreduce/hadoop-mapreduce-*-tests.jar
+```
+
+如果不指定参数，大多数基准测试程序都会显示具体用法。示例如下：
+
+```sh
+％hadoop jar $HADOOP_HOME/share/hadoop/mapreduce/hadoop-mapreduce-*-tests.jar TestDFSIO
+
+TestDFSIO.1·7
+Missing arguments．
+Usage：TestDFSIO [genericOptions] -read [-random丨-backward|
+-skip[-skipSize Size]] | -write | -append丨-clean [ -compression codecClassName]
+
+[-nrFiles N] [-size Size[B|KB|MBlGB|TB]] [-resFile resultFileName]
+[-bufferSize Bytes] [-rootDir]
+```
+
+#### 1. 使用TeraSort来评测HDFS
+
+Hadoop自带一个名为TeraSort的Mapreduce程序，该程序对输人进行全排序。由于全部输人数据集通过shuftle传输，所以TeraSort对于同时评测HDFS和MapReduce非常有用。测评分为三步：生成随机数据、执行排序和验证结果。
+
+首先，使用teragen生成随机数据（可以在示例JAR文件中找到，而不是测试用JAR文件）。teragen运行一个仅有map任务的作业，可以生成指定行数的二进制数据。每一行是100字节长，这样使用1000个map任务可生成ITB的数据，执行命令如下(10t是10TB的缩写)：
+
+```bash
+％hadoop jar $HADOOP_HOME/share/hadOOP/mapreduce/hadoop-mapreduce-examples.*.jar \ 
+teragen -Dmapreduce.job.maps=1000 10t random-data
+```
+
+接下来，运行Terasort：
+
+```bash
+％hadoop jar $HADOOP_HOME/share/hadoop/mapreduce/hadoop-mapreduce-examples-*..jar \ 
+terasort random-data sorted-data
+```
+
+排序的总执行时间会是用户感兴趣的度量值。此外，通过web界面(http://resource-manager-host:8088/）来观察作业的进度更有意义，这样可以了解作业在各个阶段的开销。在此基础上，可以练习如何调整系统参数（参见6，6节对作业调优的讨论）。
+
+最后，需要验证在“文件中的数据是否已经排好序：
+
+```bash
+％hadoop jar $HADOOP_HOME/share/hadoop/mapreduce/hadoop-mapreduce-examples-*.jar \
+teravalidate sorted-data report
+```
+
+该命令运行了一个小的MapReduce作业，对排序后的数据执行一系列检查，以验证排序结果是否正确。任何错误都可以在输出文件report/part-r-00000中找到。
+
+#### 2. 其他基准评测程序
+
+- TestDFSIO主要用于测试HDFS的I/O性能。该程序使用一个MapReduce作业作为并行读/写文件的一种便捷途径。
+- MRBench使用mrbench会多次运行一个小型作业。与TeraSort相互映衬，该基准的主要目的是检验小型作业能否快速响应。
+- NNBench(使用nnbench)测试namenode硬件的加载过程。
+- Gridmix而是一个基准平测程序套装。通过模拟一些真实常见的数据访问模式，Gridmix能逼真地为一个集群的负载建模。用户可参阅分发包中的文档来了解如何运行Gridmix。
+- SWIM(StatisticaI WorkIoad lnjector for MapReduce)，是一个真实的MapReduce工作负载库，可以用来为被测系统生成代表性的测试负载。
+- TPCx-HS，基于TeraSort的标准基准评测程序，来自事务处理性能委员会(Transaction Processing Performance Council)。
+
+### 10.5.2 用户作业
+
+出于对集群性能调优目的，最好包含若干代表性强，使用频繁的作业，这样的话，调优操作可以更有针对性，而不只是对通用场景进行调优。但如果待测集群是用户的第一个Hadoop集群，且还没有任何作业，则Gridmix或SWIM都不失为一个好的评测方案。
+
+如果想把自己的作业作为基准评测时，用户还需要为作业选择数据集合。这样的话，不管运行多少次，作业始终都基于相同的数据集合，便于分析、比较性能变迁。当新建或升级集群时，使用同一数据集合还可以比较新旧集群的性能。
+
