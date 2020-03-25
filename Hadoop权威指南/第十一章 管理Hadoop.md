@@ -81,3 +81,12 @@ namenode的存储目录中还包含edits、fsimage和seen_txid等二进制文件
 （4）辅助namenode将新的fsimage文件发送回主namenode(使用HTTP PUT)，主namenode将其保存为临时的.ckpt文件。
 
 （5）主namenode重新命名临时的fsimage文件，便于日后使用。
+
+最终，主namenode拥有最新的fsimage文件和一个更小的正在进行中的edits文件(文件可能非空，因为在创建检查点过程中主namenode还可能收到一些编辑请求)。当namenode处在安全模式时，管理员也可调用`hdfs dfsadmin- saveNamespace`命令来创建检查点。
+
+这个过程清晰解释了辅助namenode和主namenode拥有相近内存需求的原因（因为辅助namenode也把fsimage文件载人内存）。因此，在大型集群中，辅助namenode需要运行在一台专用机器上。
+
+创建检查点的触发条件受两个配置参数控制：
+
+- 通常情况下，辅助namenode每隔一小时（由dfs.namenode.checkpoint.period属性设置，以秒为单位）创建检查点；
+- 从上一个检查点开始编辑日志大小已经达到100万个事务(dfs.namenode.checkpoint.txns属性设置)时，即使不到一小时，也会创建检查点，检查频率为每分钟一次(dfs.namenode.checkpoint.check.period属性设置，以秒为单位)。
