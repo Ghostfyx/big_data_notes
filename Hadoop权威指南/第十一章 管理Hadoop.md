@@ -90,3 +90,53 @@ namenode的存储目录中还包含edits、fsimage和seen_txid等二进制文件
 
 - 通常情况下，辅助namenode每隔一小时（由dfs.namenode.checkpoint.period属性设置，以秒为单位）创建检查点；
 - 从上一个检查点开始编辑日志大小已经达到100万个事务(dfs.namenode.checkpoint.txns属性设置)时，即使不到一小时，也会创建检查点，检查频率为每分钟一次(dfs.namenode.checkpoint.check.period属性设置，以秒为单位)。
+
+------
+
+实际用户可以使用-checkpoint选项来启动namenode，它将运行一个检查点过程以应对主namenode，这等价于运行一个辅助namenode。
+
+------
+
+<img src="./img/11-1.jpg" style="zoom:67%;" />
+
+​																	**图11-1 创建检查点过程**
+
+#### 3. 辅助namenode的目录结构
+
+辅助namenode的检查点目录(dfs.namenode.checkpoint.dir)的布局和主namenode的检查点目录的布局相同。这种设计方案的好处是，在主namenode发生故障时（假设没有及时备份，甚至在NFS上也没有），可以从辅助namenode恢复数据。
+
+有两种实现方法：
+
+- 将相关存储目录复制到新的namenode中；
+- 使用`-importCheckpoint`选项启动namenode守护进程，从而将辅助namenode用作新的主namenode。借助该选项，仅当`dfs.namenode.name.dir`属性定义的目录中没有元数据时，辅助namenode会从`dfs.namenode.checkpoint.dir`属性定义的目录载人最新的检查点namenode元数据。
+
+#### 4. datanode目录结构
+
+和namenode不同的是，datanode的存储目录是初始阶段自动创建的，不需要额外格式化。datanode的关键文件和目录如下所示：
+
+```
+${dfs.datanode.data.dir}/
+|— current
+| |— BP-526805057-127.0.0.1-1411980876842
+| |  |__current
+| |  |— VERSION
+| |  |— finalized
+| |  |  |----blk_1073741825
+| |  |  |----blk_1073741825_1001.meta
+| |  |  |----blk_1073741826
+| |  |  |----blk_1073741826_1002.meta
+| |  |__ rbw
+| |__VERSION
+|_in_use.lock
+```
+
+HDFS数据块存储在以blk_为前缀名的文件中，文件名包含了该文件存储的块的原始字节数，每个块有一个相关联的带有后缀的元数据文件。元数据文件包括头部(含版本和类型信息)和该块各区段的一系列的校验和。
+
+每一个块属于一个数据池，每个数据块都有自己的存储目录，目录根据数据块池ID形成和(namenode的VERSION文件中的数据块池ID相同)。
+
+当目录中数据块的数量增加到一定规模时，datanode会创建一个子目录来存放新的数据块及其元数据信息。如果当前目录已经存储了64个(通过dfs.datanode.numblocks属性设置，默认值64)数据块时，就创建一个子目录。终极目标是设计一棵高扇出的目录树，即使文件系统中的块数量非常多，目录树的层数也不多。通过这种方式，datanode可以有效管理各个目录中的文件，避免大多数操作系统遇到的管理难题，即很多(成千上万个)文件放在同一个目录之中。
+
+如果dfs.datanode.data.dir属性指定了不同磁盘上的多个目录，那么数据块会以**轮转(round-robin)**的方式写到各个目录中。注意，同一个datanode上的每个磁盘上的块不会重复，只有不同datanode之间的块才有可能重复。
+
+### 11.1.2 安全模式
+
