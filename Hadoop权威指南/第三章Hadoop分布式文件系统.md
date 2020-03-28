@@ -1,3 +1,7 @@
+[TOC]
+
+
+
 # 第三章 Hadoop分布式文件系统
 
 当数据集大小超过一台独立的物理机器的存储能力时，就有必要对它进行分区（Partition）并存储在若干台单独的机器上。管理网络中跨多台计算机存储的文件系统称为分布式文件系统（distributed filesystem）。该系统架构于网络之上，因此会引入网络编程的复杂性，因此分布式文件系统比普通的磁盘文件系统更为复杂。
@@ -85,7 +89,7 @@ namenode在内存中保存文件系统中每个文件和每个数据块的引用
 
 故障切换时分为平稳故障转移和非平稳故障转移两种情况。非平稳故障转移的情况下，无法确切知道知道失效namenode是否已经停止运行，例如：网速非常慢的情况下，心跳检验超时。为此HA机制做了进一步优化，确保之前活动的namenode不会执行危害系统并导致系统崩块的操作——称为“规避”(fencing)。规避机制包括：kill 之前namenode进程；收回共享存储目录权限；屏蔽网络端口等。
 
-客户端故障切换通过客户端类库实现透明处理，最简单的实现是通过客户端的配置文件实现故障切换控制。HDFS URI使用一个逻辑主机名（配置Host），逻辑主机名映射到一个namenode地址，客户端会访问每个namenode类库。
+客户端故障切换通过客户端类库实现透明处理，最简单的实现是通过客户端的配置文件实现故障切换控制。HDFS URI使用一个逻辑主机名（配置Host），逻辑主机名映射到一个namenode地址，客户端会访问每个namenode地址直至处理完成。
 
 ## 3.3 命令行接口
 
@@ -694,7 +698,7 @@ Hadoop无法自定义网络拓扑结构，需要用户理解并自定义，会�
 
 1. 客户端通过对DistributedFileSystem对象调用create( )函数来新建文件；
 
-2. DistributedFileSystem对namenode发起一次RPC调用，在文件系统的命名中间中新建一个文件，此时该文件还没有数据块。namenode执行各种不同的检查以确保这个文件不存在以及客户端有创建该文件的权限。DistributedFileSystem向客户端返回一个FSDataOutputStream对象，由此客户端可以开始写入数据，与读取数据类似，FSDataOutputStream封装一个DFSOutputStream对象，该对象负namenode和datanode之间的通信。
+2. DistributedFileSystem对namenode发起一次RPC调用，在文件系统的命名中间中新建一个文件，此时该文件还没有数据块。namenode执行各种不同的检查以确保这个文件不存在以及客户端有创建该文件的权限。DistributedFileSystem向客户端返回一个FSDataOutputStream对象，由此客户端可以开始写入数据，与读取数据类似，FSDataOutputStream封装一个DFSOutputStream对象，该对象负责namenode和datanode之间的通信。
 
 3. 客户端写入数据时，DFSOutputStream将它分为一个个的数据包，并写入内部队列，它的责任是根据datanode列表来要求namenode分配适合的新块来存储数据复本。这一组datanode构成一个管线——默认复制3个副本，所以管线由3个节点。
 
