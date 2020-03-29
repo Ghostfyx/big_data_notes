@@ -1,3 +1,7 @@
+[TOC]
+
+
+
 # 第四章 关于YARN
 
 Apache YARN(Yet Another Resource Negotiator)是Hadoop集群资源管理系统。YARN被引入Hadoop2，最初为了改善MapReduce的实现，具有足够的通用性，可以支持其他的分布式计算模型。
@@ -200,9 +204,13 @@ dev队列进一步划分为eng和science两个容量相等的队列，dev队列�
 
 将应用放置到哪个队列中，取决人应用本身。例如：MapReduce中，可以通过设置属性mapreduce.job.queuename来指定要用的队列，如果队列不存在，则提交时会报错；如果不指定队列，则应用被放到一个名为**default**的默认队列中。
 
+------
+
 **Tips 容量调度器识别队列名**
 
 容量调度器的队列名应该是队列层次名的最后一部分，完整的队列层次名是不会被识别的。例如：对于上述配置范围，prod和eng是合法的队列名，root.dev.eng和dev.eng是不会被识别的。
+
+------
 
 ### 4.3.3 公平调度器配置
 
@@ -216,7 +224,7 @@ dev队列进一步划分为eng和science两个容量相等的队列，dev队列�
 
 **1. 启用公平调度器**
 
-公平调度器的使用由属性yarn.resourcemanager.scheduler.class的设置决定，默认使用容量调度器，但是在一些Hadoop的分布式项目，如CDH中是默认使用公平调度器。将yarn-site.xml文件中的yarn.resourcemaneger.scheduler.class设置为org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler，即可使用公平调度器。
+公平调度器的使用由属性yarn.resourcemanager.scheduler.class的设置决定，默认使用容量调度器(但是在一些Hadoop的，如CDH默认使用公平调度器。将yarn-site.xml文件中的yarn.resourcemaneger.scheduler.class设置为org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler，即可使用公平调度器。
 
 **2. 队列配置**
 
