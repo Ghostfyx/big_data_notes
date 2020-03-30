@@ -245,7 +245,7 @@ dev队列进一步划分为eng和science两个容量相等的队列，dev队列�
 	</queue>
 
 	<!-- 设置队列层次 -->
-	<queue name="prod">
+	<queue name="dev">
 		<weight>60</weight>
 		<queue name="eng"/>
 		<queue name="science"/>
