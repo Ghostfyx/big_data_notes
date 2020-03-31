@@ -4,8 +4,6 @@ Hadoop自带一套原子操作用于数据I/O操作，其中有一些技术比Ha
 
 [TOC]
 
-
-
 ## 5.1 数据完整性
 
 检测数据是否损坏的常用方式是，在数据第一次引入系统时**计算校验和**(checkSum)并在数据通过一个不可靠通道进行传输时再次计算校验和，如果校验和不一致，则认为数据已经损坏。但该技术不能修复数据，因此应该避免使用低端硬件，具体来说，一定要使用ECC内存(应用了能够实现错误检查和纠正技术的内存条。一般多应用在服务器及图形工作站上，这将使系统在工作时更趋于安全稳定)。
@@ -114,7 +112,7 @@ codec是压缩-解压缩算法的一种实现。在Hadoop中，一个对Compress
 
 CompressionCodec包含两个函数：
 
-- createOutptStream(OutputStream out)：对写入输入的数据流压缩，在底层的数据流中对需要以压缩格式写入在此之前尚未压缩压缩的数据新建一个CompressionOutputStream对象。
+- createOutptStream(OutputStream out)：对写入输出的数据流压缩，在底层的数据流中对需要以压缩格式写入在此之前尚未压缩压缩的数据新建一个CompressionOutputStream对象。
 - createInputStream(InputStream in)：对输入数据流中读取的数据进行解压缩时，调用该方法获取CompressionInputStream对象，从底层数据流读取解压缩后的数据。
 
 CompressionOutputStream和CompressionInputStream，类似于java.util. zip.DeflaterOutputStream和java.util.zip.DeflaterInputStream，只不过前两者能够重置其底层的压缩或解压缩方法，对于某些将部分数据流(section of data stream)压缩为单独数据块(block)的应用。
@@ -402,7 +400,7 @@ public int compare(byte[] b1, int s1, int l1, byte[] b2, int s2, int l2);
 
 该接口允许其实现直接比较数据流中的记录，无需先把数据流反序列化为对象，避免了新建对象的额外开销。例如：根据IntWritable接口实现的comparator实现原始的compare()方法，该方法可以从每个字节数组b1和b2中读取给定起始位置(s1和s2)以及长度(l1和l2)的一个整数进而直接进行比较。
 
-WritableComparator是对继承自WritableComparable类的RawComparator类的一个通用实现。它提供两个主要功能。
+WritableComparator是对继承自Comparable类的RawComparator类的一个通用实现。它提供两个主要功能。
 
 - 第一，它提供了对原始compare()方法的一个默认实现，该方法能够反序列化将在流中进行比较的对象，并调用对象的compare()方法。
 
@@ -436,7 +434,7 @@ Hadoop自带的org.apache.hadoop.io包中有广泛的Writable类可供选择。�
 
 ​															**图5-1. Writable类的层次结构**
 
-**1. Java基本了警的Wirtable封装器**
+**1. Java基本类型的Wirtable封装器**
 
 Writable类对所有Java基本类型(参见表5-7)提供封装，char类型除外(可以存储在IntWritable中)。所有的封装包含get()和set()两个方法用于读取或存储封装的值。
 
@@ -760,7 +758,7 @@ SequenceFiles也可以作为小文件的容器。HDFS和MapReduce是针对大文
 
 存储在SequenceFile中的键和值并不一定是writable类型，只要能被Serialization序列化和反序列化，任何类型都可以。
 
-一旦拥有SequenceFile.Writer实例，就可以通过append()方法在文件末尾附加键-值对。写完后，可以调用close()方法(SequenceFile.Writer实现了java.io.Closeable接口)。
+一旦拥有实例，就可以通过append()方法在文件末尾附加键-值对。写完后，可以调用close()方法(SequenceFile.Writer实现了java.io.Closeable接口)。
 
 **范例5-10. 写入SequenceFile对象**
 
