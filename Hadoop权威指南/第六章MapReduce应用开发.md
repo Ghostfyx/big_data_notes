@@ -1,3 +1,5 @@
+[TOC]
+
 # 第六章 MapReduce应用开发
 
 本章从实现层面介绍Hadoop中开发MapReduce程序。MapReduce编程遵循一个特征流程：
@@ -184,7 +186,7 @@ assertThat(conf.get("length"), is(String)null);
 
 ### 6.2.1 管理配置
 
-开发Hadoop应用时，经常需要在本地运行和集群运行之间进行切换，为了进行环境切换，常用的一种方法是：Hadoop的配置文件包含每个集群的连接配置，在运行Hadoop医用或工具时指定连接配置。Hadoop的配置文件最好放在Hadoop安装目录外，以便于轻松在Hadoop不同版本之间进行切换，从而避免重复和配置文件丢失。
+开发Hadoop应用时，经常需要在本地运行和集群运行之间进行切换，为了进行环境切换，常用的一种方法是：Hadoop的配置文件包含每个集群的连接配置，在运行Hadoop应用或工具时指定连接配置。Hadoop的配置文件最好放在Hadoop安装目录外，以便于轻松在Hadoop不同版本之间进行切换，从而避免重复和配置文件丢失。
 
 假设conf目录有如下三个配置：hadoop-local.xml、hadoop-localhost.xml、hadoop-cluster.xml。
 
@@ -377,7 +379,7 @@ Hadoop的默认配置文件在`${HADOOP_HOME}/share/doc$`目录中，包括：co
 | 选项名称                       | 描述                                                         |
 | ------------------------------ | ------------------------------------------------------------ |
 | -D property=value              | 将指定值赋值给Hadoop配置选项，覆盖配置文件中的默认属性或站点属性，或通过-conf 选项设置的任何属性 |
-| -conf filename...              | 将制定文件条件到配置资源列表中，这里设置站点属性或同时设置一组属性的简单方法 |
+| -conf filename...              | 将制定文件条件到配置资源列表中，这是设置站点属性或同时设置一组属性的简单方法 |
 | -fs uri                        | 用指定的URI设置默认文件系统，是-D fs.default.FS=uri的快捷方式 |
 | -jt host:port                  | 用指定主机和端口号设置YARN资源管理器，是-D yarn.resourcemanager.adderss=hostname:port的快捷方式 |
 | -files file1,file2,...         | 从本地文件系统或任何指定模式的文件系统中复制指定文件到MapReduce所用文件系统，确保任务工作目录的MR程序可以访问到这些文件 |
@@ -607,7 +609,7 @@ MaxTemperatureDriver实现了Tool接口，因此能够设置GenericOptionParser�
 	  }
 	```
 
-	configuration设置了f s.defaultFs和mapreduce.framework.name使用本地文件系统和本地作业运行器。
+	configuration设置了fs.defaultFs和mapreduce.framework.name使用本地文件系统和本地作业运行器。
 
 - 使用mini集群运行。Hadoop有一组测试类MiniDFSCluster、MiniMRCluster和MiniYARNCluster，它以程序的方式创建正在运行的集群，不同于本地作业运行器，它允许在整个HDFS、MapReduce和YARN机器上运行测试。Hadoop的ClusterMapReduceTestCase抽象类提供了一个编写mini集群测试的基础，setUp()和tearDown( )方法可以处理启动和停止时间中的HDFS和YARN集群细节。
 
@@ -1013,14 +1015,14 @@ HADOOP_ROOT_LOGGER=DEBUG.console hadoop fs -text /foo/bar
 
 ​																	**表6-3  作业优化检查表**
 
-| 范围         | 最佳实践                                                     | 更多参考信息 |
-| ------------ | ------------------------------------------------------------ | ------------ |
-| mapper数量   | mapper需要运行多长时间？如果平均只运行几秒钟，则可以看是否能用更少mapper运行更长的时间，通常是一分钟左右。时间长度取决于使用的输人格式 | 8.2.1节      |
-| reducer数量  | 检查使用的reducer数目是不是超过1个。根据经验，Reduce任务应运行5分钟左右，且能生产出至少一个数据块的数据 | 8.1.1节      |
-| comnbiner    | 作业能否充分利用combiner来减少通过shuffle传输的数据量        | 2.4.2节      |
-| 中间值的压缩 | 对map输出进行压缩几乎总能使作业执行得更快                    | 5.2.3        |
-| 自定义序列   | 如果使用自定义的Writab1e对象或自定义的comparator，则必须确保已实现RawComparator | 5.3.3        |
-| 调整shuffle  | MapReduce的shuffle过程可以对一些内存管理的参数进行调整，以弥补性能的不足 | 7.3.3        |
+| 范围           | 最佳实践                                                     | 更多参考信息 |
+| -------------- | ------------------------------------------------------------ | ------------ |
+| mapper数量     | mapper需要运行多长时间？如果平均只运行几秒钟，则可以看是否能用更少mapper运行更长的时间，通常是一分钟左右。时间长度取决于使用的输人格式 | 8.2.1节      |
+| reducer数量    | 检查使用的reducer数目是不是超过1个。根据经验，Reduce任务应运行5分钟左右，且能生产出至少一个数据块的数据 | 8.1.1节      |
+| comnbiner      | 作业能否充分利用combiner来减少通过shuffle传输的数据量        | 2.4.2节      |
+| 中间结果的压缩 | 对map输出进行压缩几乎总能使作业执行得更快                    | 5.2.3        |
+| 自定义序列     | 如果使用自定义的Writab1e对象或自定义的comparator，则必须确保已实现RawComparator | 5.3.3        |
+| 调整shuffle    | MapReduce的shuffle过程可以对一些内存管理的参数进行调整，以弥补性能的不足 | 7.3.3        |
 
 #### 分析任务
 
@@ -1100,7 +1102,7 @@ JobClient.runJob(conf2);
 
 ### 6.7.3 关于Apache Oozie
 
-Apache Oozie时一个运行工作流的系统，该工作流由相互依赖的作业组成。Oozie由两部分组成：一个工作流引擎，负责存储和运行不同类型的Hadoop作业(MapReduce、pig、Hive等)组成的工作流；一个coordinator引擎，负责基于预定义的调度策略及数据可用性运行工作流作业。
+Apache Oozie是一个运行工作流的系统，该工作流由相互依赖的作业组成。Oozie由两部分组成：一个工作流引擎，负责存储和运行不同类型的Hadoop作业(MapReduce、pig、Hive等)组成的工作流；一个coordinator引擎，负责基于预定义的调度策略及数据可用性运行工作流作业。
 
 在Oozie里，一个工作流是一个由**动作节点和控制流节点**组成的有向无环图。动作节点执行工作流任务，例如在HDFS中移动文件，运行MapReduce、Streaming、Pig或Hive作业。执行Sqoop导入，又或者是运行Shell脚本或Java应用。控制节点通过构建条件逻辑或并行执行来管理活动之间的工作流执行的情况。
 
