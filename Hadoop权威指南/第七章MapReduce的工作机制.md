@@ -1,3 +1,5 @@
+[TOC]
+
 # 第七章 MapReduce的工作机制
 
 在本章中，将深入学习MapReduce的工作机制。
@@ -45,7 +47,7 @@ Application Master必须决定如何运行构成MapReduce作业的各个任务�
 
 ### 7.1.3 任务分配
 
-**如果作业不适合作为uber任务运行，application master就会为该作业中所有map任务和reduce任务向资源管理器请求容器(步骤8)。** 首先为Map任务发出请求，该请求优先级要高于Reduce任务的请求。这是因为所有的map任务必须在reduce的排序阶段能够启动前完成。直到有5%的map任务已经完成，为reduce任务的请求才会发出。
+**如果作业不适合作为uber任务运行，application master就会为该作业中所有map任务和reduce任务向资源管理器请求容器(步骤8)。** 首先为Map任务发出请求，该请求优先级要高于Reduce任务的请求。这是因为所有的map任务必须在reduce的排序阶段能够启动前完成。直到有5%的map任务已经完成，reduce任务的请求才会发出。
 
 reduce任务能够在集群中任务位置运行，但是map任务的请求有着数据本地化局限，这也是调度器所关注的(4.1.1节)。在理想情况下，任务是数据本地化(data local)的，意味着任务在分片驻留的同一节点上运行。可选情况是：机架本地化(rack local)运行、其他机架上运行。对于一个特定的作业运行，可以通过查看作业的计数器来确定在每个本地化层次上运行的任务数量(参见表9-6)。
 
@@ -193,7 +195,7 @@ map函数开始产生输出时，并不是简单地将它写入到磁盘。这�
 
 （2）每个map任务都有一个环形内存缓冲区作为用于存储任务输出。在默认情况下，缓存区的大小为100MB，可以通过`mapreduce.task.io.sort.mb`属性来调整。
 
-（3）一旦缓冲区的内容达到阈值(`mapreduce.map.sort.spill.percent`，默认为80%，或0.8)，一个后台线程便开始把内容溢写(spill)到磁盘，在溢写到磁盘的过程中，map输出继续写到缓冲区。但如果在此期间缓冲区被写满，map会被阻塞直到磁盘过程完成。溢写过程按轮询方式将缓冲区的内容到`mapreduce.cluster.local.dir`属性在作业特定子目录下的指定的目录中。
+（3）一旦缓冲区的内容达到阈值(`mapreduce.map.sort.spill.percent`，默认为80%，或0.8)，一个后台线程便开始把内容溢写(spill)到磁盘，在溢写到磁盘过程中，map输出继续写到缓冲区。但如果在此期间缓冲区被写满，map会被阻塞直到溢写过程完成。溢写过程按轮询方式将缓冲区的内容写到`mapreduce.cluster.local.dir`属性在作业特定子目录下的指定的目录中。
 
 （4）在写磁盘前，线程首先根据数据最终要传的reducer把数据划分成相应的分区(partition，用户也可自定义分区函数，默认的partitioner通过哈希函数来分区)。每个分区中后台线程按键进行内存中排序，如果有一个combiner函数，它就在排序后的输出上运行。行combiner函数使得map输出结果更紧凑，因此减少写到磁盘的数据和传递给reducer的数据。
 
@@ -211,21 +213,23 @@ reduer通过HTTP得到输出文件的分区。文件分区工作线程数量由�
 
 map输出文件位于运行map任务的tasktracker的本地磁盘(注意，尽管map输出经常写到map tasktracker 的本地磁盘，但reduce输出并不这样)。现在，tasktracker需要为分区文件运行reduce任务。并且，reduce任务需要集群上若干个map任务的map输出作为其特殊的分区文件。每个map任务的完成时间可能不同，因此每个任务完成时，reduce任务就开始复制其输出，即reduce的复制阶段。reduce任务有少量复制线程，因此能够并行取得map输出。默认值是5个线程，可以通过修改设置`mapreduce.reduce.shuffle.parallelcopies`改变。
 
-```
-reducer如何知道要从哪台机器上取得map输入呢
+------
 
-		map任务完成后，会使用心跳机制通知他们的application master。因此，对于指定作业，application master知道map输出和主机位置之间的映射关系。reduer中的一个线程定期询问master获取map输出主机的位置，直到获取所有输出的位置。
+**reducer如何知道要从哪台机器上取得map输入呢**
 
-		由于第一个reducer可能失败，因此主机并没有在第一个reducer检索到map输出时就立即从磁盘上删除文件。主机会在application master通知删除时，删除map输出，通常是在作业完成后执行(避免reducer失败后，map输出临时文件被删除，需要重新执行map任务，浪费时间和计算机资源)。
-```
+map任务完成后，会使用心跳机制通知他们的application master。因此，对于指定作业，application master知道map输出和主机位置之间的映射关系。reduer中的一个线程定期询问master获取map输出主机的位置，直到获取所有输出的位置。
 
-很小map输出会被复制到reduce的JVM的内存(由`mapreduce.reduce.shuffle.input.buffer.percent`属性控制，指定用于此用途的堆空间的百分比)，否则被复制到磁盘。当内存缓冲区达到阈值(由mapreduce.reduce.shuffle.merge.percent决定)或者达到map输出阈值（由mapreduce.reduce.merge.inmen.threshold控制），则合并后溢出写到磁盘中。
+由于第一个reducer可能失败，因此主机并没有在第一个reducer检索到map输出时就立即从磁盘上删除文件。主机会在application master通知删除时，删除map输出，通常是在作业完成后执行(避免reducer失败后，map输出临时文件被删除，需要重新执行map任务，浪费时间和计算机资源)。
+
+------
+
+很小map输出被复制到reduce的JVM的内存(`mapreduce.reduce.shuffle.input.buffer.percent`属性，指定堆空间的百分比)，否则复制到磁盘。当内存缓冲区达到阈值(由mapreduce.reduce.shuffle.merge.percent决定)或者达到map输出阈值(由mapreduce.reduce.merge.inmen.threshold控制)，则合并后溢出写到磁盘中。
 
 如果指定combiner，则在合并期间运行它以降低写入硬盘的数据量。随着磁盘上副本增多，后台线程会将它们合并为更大的、排好序的文件。这会为后面的合并节省一些时间。注意，为了合并，压缩的map输出（通过map任务）都必须在内存中被解压缩。
 
 #### 2. reducer合并排序
 
-复制完所有map输出后，reduce任务进入排序阶段（更恰当的说法是合并阶段，因为排序是在map端进行的），这个阶段将合并map输出，维持其顺序排序。这是循环进行的。比如，如果有50个map输出，而合并因子是10(10为默认设置，由mapreduce.task.io.sort.factor属性设置，与map的合并类似)，合并将进行5趟，每趟将10个文件合并成一个文件，因此最后有5个中间文件。
+复制完所有map输出后，reduce任务进入排序阶段(更恰当的说法是合并阶段，因为排序是在map端进行的)，这个阶段将合并map输出，维持其顺序排序。这是循环进行的。比如，如果有50个map输出，而合并因子是10(10为默认设置，由mapreduce.task.io.sort.factor属性设置，与map的合并类似)，合并将进行5趟，每趟将10个文件合并成一个文件，因此最后有5个中间文件。
 
 #### 3. reduce阶段
 
