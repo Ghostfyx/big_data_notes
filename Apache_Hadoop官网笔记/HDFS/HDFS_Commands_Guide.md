@@ -351,4 +351,3 @@ hdfs dfsadmin [-help [cmd]]
 | `-triggerBlockReport` `[-incremental]` <datanode_host:ipc_port> | Trigger a block report for the given datanode. If ‘incremental’ is specified, it will be otherwise, it will be a full block report. |
 | `-listOpenFiles` `[-blockingDecommission]` `[-path ]`        | List all open files currently managed by the NameNode along with client name and client machine accessing them. Open files list will be filtered by given type and path. Add -blockingDecommission option if you only want to list open files that are blocking the DataNode decommissioning. |
 | `-help` [cmd]                                                | Displays help for the given command or all commands if none is specified. |
-
