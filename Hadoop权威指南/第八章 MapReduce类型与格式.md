@@ -1,3 +1,5 @@
+[TOC]
+
 # 第八章 MapReduce类型与格式
 
 MapReduce数据处理非常简单：map和reduce函数的输入和输出是键-值对。本章深入讨论MapReduce模型，重点介绍各类型的数据(从简单文本到结构化的二进制对象)如何在MapReduce中使用。
@@ -45,17 +47,17 @@ public void write(KEYOUT key, VALUEOUT value)
 
 由于Mapper和Reducer是单独的类，因此类型参数可能会不同，所以Mapper中KEYIN(say)的实际类型可能与Reducer中同名的类型参数（KEYIN）的类型不一致。例如，在前面章节的求最高温度例子中，Mapper中KEYIN为LongWritable类型，而Reducer中为Text类型。
 
-如果使用combiner函数，它与reduce数（是Reducer的一个实现）的形式相同，不同之处是它的输出类型是中间的键·值对类型（K2和V2)，这些中间值可以输人reduce函数：
+如果使用combiner函数，它与reduce函数(Reducer的一个实现)的形式相同，不同之处是它的输出类型是中间的键-值对类型（K2和V2)，这些中间值可以输人reduce函数：
 
 ```
 map:(K1,V1) -> list(K2,V2)
-combiner:(K2 ,list(V2 ) ) -> list(K2 , V2)
+combiner:(K2 ,list(V2)) -> list(K2 , V2)
 reduce:(K2，list(V2)) -> list(K3,V3)
 ```
 
 combiner函数与reduce函数通常是一样的，在这种情况下，K3与K2类型相同，V3与V2类型相同。
 
-partition函数对中间结果的键·值对（K2和V2）进行处理，并且返回一个分区索引(partition index)。实际上，分区由键单独决定（值被忽略）。
+partition函数对中间结果的键·值对（K2和V2）进行处理，并且返回一个分区索引(partition index)。实际上，分区由键单独决定(值被忽略)。
 
 ```
 partition：（K2,V2) -> integer
@@ -71,7 +73,7 @@ public abstract class Partitioner<KEY, VALUE> {
 
 表8-1总结了MapReduce API的配置选项，把属性分为可设置类型的属性和必须与类型相容的属性。
 
-输入数据类型由输入格式进行设置，例如：对应于TextInputFormat的键类型是LongWritable，值类型是Text。其他的类型通过调用Job类的方法来进行显式设置(旧版本API中使用JobConf类的方法)。如果没有显式设置，则中间的类型默认为（最终的）输出类型，即默认值Longwritable和Text。因此，如果K2与K3是相同类型，就不需要调用`setMap0utputKeyClass()`，因为它将调用`set0utputKeyClass()`来设置；同样，如果V2与V3相同，只需要使用`setOutputValueClass()`。
+输入数据类型由输入格式进行设置，例如：对应于TextInputFormat的键类型是LongWritable，值类型是Text。其他的类型通过调用Job类的方法来进行显式设置(旧版本API中使用JobConf类的方法)。如果没有显式设置，则中间的类型默认为(最终的)输出类型，即默认值Longwritable和Text。因此，如果K2与K3是相同类型，就不需要调用`setMap0utputKeyClass()`，因为它将调用`set0utputKeyClass()`来设置；同样，如果V2与V3相同，只需要使用`setOutputValueClass()`。
 
 这些为中间和最终输出类型进行设置的方法似乎有些奇怪。为什么不能结合mapper和reducer导出类型呢？ 因为，Java的泛类型机制有很多限制：类型擦除(type erasure)导致运行过程中类型信息并非一直可见，所以Hadoop不得不进行明确设定。这也意味着可能会在MapReduce配置的作用中遇到不兼容的类型，因为这些配置在编译时无法检查。与MapReduce类型兼容的设置列在表8-1中。类型冲突是在作业执行过程中被检测出来的，所以一个比较明智的做法是先用少量数据跑一次测试任务，发现并修正任何一个类型不兼容的问题。
 
@@ -80,7 +82,7 @@ public abstract class Partitioner<KEY, VALUE> {
 | 属性                                        | 属性设置方法                 | 输入类型K1 | V1   | 中间类型K2 | V2   | 输出类型K3 | V3   |
 | ------------------------------------------- | ---------------------------- | ---------- | ---- | ---------- | ---- | ---------- | ---- |
 | 可以设置类型的属性                          |                              |            |      |            |      |            |      |
-| mapreduce.job.inputformat.class             | setInputFormatClass()        |            | *    |            |      |            |      |
+| mapreduce.job.inputformat.class             | setInputFormatClass()        | *          | *    |            |      |            |      |
 | mapreduce.map.output.key.class              | setMapOutputKeyClass()       |            |      | *          |      |            |      |
 | mapreduce.map.output.value.class            | setMapOutputValueClass()     |            |      |            | *    |            |      |
 | mapreduce.job.output.key.class              | setOutputKeyClass()          |            |      |            |      | *          |      |
@@ -191,7 +193,7 @@ public class HashPartitioner<K, V> extends Partitioner<K, V> {
 
 默认情况下，只有一个reducer，因此，也就只有一个分区，在这种情况下，由于所有数据都放人同一个分区，partitioner操作将变得无关紧要了。然而，如果有多个reduce任务，了解HashPartitioner的作用就非常重要。假设基于键的散列函数足够好，那么记录将被均匀分到若干个reduce任务中，这样，具有相同键的记录将由同一个reduce任务进行处理。
 
-map任务的数量等于输人文件被划分成的分块数，这取决于输人文件的大小以及文件块的大小（如果此文件在HDFS中）。关于控制块大小的操作，可以参见8.2.1节。
+map任务的数量等于输人文件被划分成的分块数，这取决于输人文件的大小以及文件块的大小(如果此文件在HDFS中)。关于控制块大小的操作，可以参见8.2.1节。
 
 **选择Reducer个数**
 
@@ -357,18 +359,18 @@ add方法和set方法允许指定包含的文件。排除特定文件，可用`F
 
 ​														**表 8-5 控制分片大小的属性**
 
-| 属性名称                                      | 类型 | 默认值             | 描述                                       |
-| --------------------------------------------- | ---- | ------------------ | ------------------------------------------ |
-| mapreduce.input.fileinputformat.split.minsize | int  | 1                  | 一个文件分片最小的有效字节数               |
-| mapreduce.input.fileinputformat.split.maxsize | long | Long.MAX_VALUE     | 一个文件分片中最大的有效字节数（以字节算） |
-| dfs.blocksize                                 | long | 128MB，即134217728 | HDFS中块的大小（按字节）                   |
+| 属性名称                                      | 类型 | 默认值             | 描述                                     |
+| --------------------------------------------- | ---- | ------------------ | ---------------------------------------- |
+| mapreduce.input.fileinputformat.split.minsize | int  | 1                  | 一个文件分片最小的有效字节数             |
+| mapreduce.input.fileinputformat.split.maxsize | long | Long.MAX_VALUE     | 一个文件分片中最大的有效字节数(以字节算) |
+| dfs.blocksize                                 | long | 128MB，即134217728 | HDFS中块的大小(按字节)                   |
 
 最大的分片大小默认是由Java的long类型表示的最大值。只有把它的值被设置成小于块大小才有效果，这将强制分片比块小。
 
 分片大小由以下公式计算，参见FileInputFormat的computeSplitSize()方法：
 
 ```java
-max(minimumSize，min(maximumSize,blockSize））
+max(minimumSize，min(maximumSize,blockSize))
 ```
 
 在默认情况下：
@@ -385,7 +387,7 @@ minimumSize < blockSize < maximumSize
 | ------------ | ------------------------ | --------------- | -------- | ------------------------------------------------------------ |
 | 1(默认值)    | Long.MAX_VALUE（默认值） | 128MB（默认值） | 128MB    | 默认情况下，分片大小与块大小相同                             |
 | 1（默认值）  | Long.MAX_VALUE（默认值） | 256MB           | 256MB    | 增加分片大小最自然的方法是提供更大的HDFS 块，通过dfs.blocksize或在构建文件时以单个文件为基础进行设置 |
-| 256MB        | Long.MAX_VALUE（默认值） | 128MB（默认值） | 256MB    | 通过使最小分片大小的值大于块大小的方法来增大 分片大小，但代价是增加了本地操作 |
+| 256MB        | Long.MAX_VALUE（默认值） | 128MB（默认值） | 256MB    | 通过使最小分片大小的值大于块大小的方法来增大分片大小，但代价是增加了本地操作 |
 | 1（默认值）  | 64MB                     | 128MB（默认值） | 64MB     | 通过使最大分片大小的值小于块大小的方法来减少分片大小         |
 
 #### 4. 小文件与CombineFileInputFotmat
@@ -399,7 +401,7 @@ CombineFileInputFormat可以缓解这个问题，它是针对小文件而设计�
 - MapReduce处理数据的最佳速度最好与数据在集群中的传输速度相同，而处理小文件将增加运行作业而必需的寻址次数。
 - HDFS集群中存储大量的小文件会浪费namenode的内存。
 
-一个可以减少大量小文件的方法是使用顺序文件（sequence file）将这些小文件合并成一个或多个大文件，可以将文件名作为键（如果不需要键，可用NullWritable等常量代替），文件的内容作为值。但如果HDFS中已经有大批小文件，可以使用CombineFileInputFormat方法。
+一个可以减少大量小文件的方法是使用顺序文件(sequence file)将这些小文件合并成一个或多个大文件，可以将文件名作为键(如果不需要键，可用NullWritable等常量代替)，文件的内容作为值。但如果HDFS中已经有大批小文件，可以使用CombineFileInputFormat方法。
 
 CombineFileInputFormat不仅可以很好地处理小文件，在处理大文件的时候也有好处。这是因为，它在每个节点生成一个分片，分片可能由多个块组成。本质上，combineFileInputFormat使map操作中处理的数据量与HDFS中文件的块大小之间的耦合度降低了。
 
@@ -432,7 +434,7 @@ CombineFileInputFormat不仅可以很好地处理小文件，在处理大文件�
 | ------------- | ------------------------ | ----------- | ------------------------ |
 | getPath()     | mapreduce.map.input.file | Path/String | 正在处理的输人文件的路径 |
 | getStart()    | mapreducenp.input.start  | long        | 分片开始处的字节偏移量   |
-| getLength()   | mapreducenp.input.length | long        | 分片的长度（按字节）     |
+| getLength()   | mapreducenp.input.length | long        | 分片的长度(按字节)       |
 
 #### 7. 把整个文件作为一条记录处理
 
@@ -598,7 +600,7 @@ Hadoop非常擅长处理非结构化文本数据，本节讨论Hadoop提供的�
 
 #### 1. TextInputFormat
 
-TextInputFormat是默认的InputFormat，每条记录是一行输入，键是LongWritable类型，存储该行在整个文件中的字节偏移量。值是这行的内容，不包括任何中行终止符(换行符和回车符)，它被打包成一个Text对象。所以，包含如下文本的文件被切分为包含4条记录的一个分片：
+TextInputFormat是默认的InputFormat，每条记录是一行输入，键是LongWritable类型，存储该行在整个文件中的字节偏移量，值是这行的内容，不包括任何中行终止符(换行符和回车符)。它被打包成一个Text对象。所以，包含如下文本的文件被切分为包含4条记录的一个分片：
 
 ```
 On the top of the Crumpetty Tree 
@@ -624,7 +626,7 @@ On account of his Beaver Hat.
 
 FileInputFormat定义的逻辑记录有时并不能很好的匹配HDFS的文件块。例如：TextInputFormat的逻辑记录是以行为单位的。那么很有可能某一行会跨文件块存放。虽然这对程序的功能没有什么影响，如行不会丢失或出错，但这种现象应该引起注意，因为这意味着那些“本地的”map(即map运行在输入数据所在的主机上）会执行一些远程的读操作，由此而来的额外开销一般不是特别明显。
 
-图8·3展示了一个例子。一个文件分成几行，行的边界与HDFS块的边界没有对齐·分片的边界与逻辑记录的边界对齐（这里是行边界），所以第一个分片包含第5行，即使第5行跨第一块和第二块·第二个分片从第6行开始。
+图8·3展示了一个例子。一个文件分成几行，行的边界与HDFS块的边界没有对齐——分片的边界与逻辑记录的边界对齐(这里是行边界)，所以第一个分片包含第5行，即使第5行跨第一块和第二块·第二个分片从第6行开始。
 
 ![](./img/8-3.jpg)
 
@@ -707,7 +709,7 @@ Hadoop的MapReduce还可以处理二进制格式的数据。
 
 Hadoop的顺序文件格式是存储二进制的健—值对的序列。由于它们是可分割的(它们有同步点，所以reader可以从文件中的任意一点与记录边界进行同步，例如分片的起点)。所以它们很符合MapReduce数据的格式要求，并且它们还支持压缩，可以使用一些序列化技术来存储任意类型。详情参见5.4.1节。
 
-如果要用顺序文件数据作为MapReduce的输人，可以使用SequenceFileInputFormat0键和值是由顺序文件决定，所以只需要保证map输人的类型匹配。例如，如果顺序文件中键的格式是lntwritable，值是Text，就像第5章中生成的那样，那么mapper的格式应该是Mapper<Intwritable,Text，K，V>，其中K和V是这个mapper输出的键和值的类型。
+如果要用顺序文件数据作为MapReduce的输人，可以使用SequenceFileInputFormat键和值是由顺序文件决定，所以只需要保证map输人的类型匹配。例如，如果顺序文件中键的格式是lntwritable，值是Text，就像第5章中生成的那样，那么mapper的格式应该是Mapper<Intwritable,Text，K，V>，其中K和V是这个mapper输出的键和值的类型。
 
 #### 2. 关于SequenceFileAsTextlnputFormat类
 
@@ -725,7 +727,7 @@ SequenceFileAsTextInputFormat是SequenceFileInputFormat的变体，它将顺序�
 
 ### 8.2.4 多个输入
 
-一个MapReduce作业的输人可能包含多个输人文件（由文件glob、过滤器和路径组成），但所有文件都由同一个InputFormat和同一个Mapper来解释。然而，数据格式往往会随时间演变，所以必须写自己的mapper来处理应用中的遗留数据格式问题。或者，有些数据源会提供相同的数据，但是格式不同。对不同的数据集进行连接(join)操作时，便会产生这样的问题。详情参见9.3.2节。例如，有些数据可能是使用制表符分隔的文本文件，另一些可能是二进制的顺序文件。即使它们格式相同，它们的表示也可能不同，因此需要分别进行解析。
+一个MapReduce作业的输人可能包含多个输人文件(由文件glob、过滤器和路径组成)，但所有文件都由同一个InputFormat和同一个Mapper来解释。然而，数据格式往往会随时间演变，所以必须写自己的mapper来处理应用中的遗留数据格式问题。或者，有些数据源会提供相同的数据，但是格式不同。对不同的数据集进行连接(join)操作时，便会产生这样的问题。详情参见9.3.2节。例如，有些数据可能是使用制表符分隔的文本文件，另一些可能是二进制的顺序文件。即使它们格式相同，它们的表示也可能不同，因此需要分别进行解析。
 
 这些问题可以用MultipleInputs类来妥善处理，它允许为每条输人路径指定InputFormat和Mapper。例如，我们想把英国Met Office的气象数据和NCDC的气象数据放在一起来分析最高气温，则可以按照下面的方式来设置输人路径：
 
@@ -744,7 +746,7 @@ public static void addInputPath(Job job,Path path,class<? extends InputFormat> i
 
 ### 8.2.5 数据库输入/输出
 
-DBInputFormat这种输入格式用于泗洪JDBC从关系型数据库中读取数据。因为它没有任何共享能力，所以在访问数据库的时候必须非常小心，在数据库中运行太多的mapper读数据可能会使数据库受不了。正是由于这个原因，DBInputFormat最好用于加载小量的数据集，如果要与来自HDFS的大数据集连接，要使用MultipleInputs。
+DBInputFormat这种输入格式用于使用JDBC从关系型数据库中读取数据。因为它没有任何共享能力，所以在访问数据库的时候必须非常小心，在数据库中运行太多的mapper读数据可能会使数据库受不了。正是由于这个原因，DBInputFormat最好用于加载小量的数据集，如果要与来自HDFS的大数据集连接，要使用MultipleInputs。
 
 输出格式是DBOutputFormat，它适用于将作业输出数据(中等规模数据)转储到数据库中。在关系型数据库和HDFS之间的数据移动另一个方法是：使用Sqoop。
 
@@ -772,8 +774,7 @@ HBase的`TableInputFormat`让MapReduce程序操作存放在HBase表中的数据�
 - `setCompressOutput(Job job, boolean compress)`：是否使用压缩算法压缩输出。
 - `setOutputCompressorClass(Job job, Class<? extends CompressionCodec> codecClass)`：设置压缩算法所使用的类。
 - `checkOutputSpecs(JobContext job)`：实现了OutputFormat，该方法会在输出路径未设置、输出路径存在时抛出异常。
-- `getOutputCommitter(TaskAttemptContext var1)`
-	其并未实现getRecordWriter()方法，由其子类实现。
+- `getOutputCommitter(TaskAttemptContext var1)`其并未实现getRecordWriter()方法，由其子类实现。
 
 ### 8.3.1 文本输出
 
