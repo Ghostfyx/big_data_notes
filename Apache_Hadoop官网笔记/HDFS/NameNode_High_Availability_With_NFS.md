@@ -391,24 +391,3 @@ digest:hdfs-zkfcs:vlUvLnd8MlacsE80rDuu6ONESbM=:rwcda
 
 ## 7. 自动故障转移 FAQ
 
-1. 以任何特定顺序启动ZKFC和NameNode守护进程是否重要？
-
-	不。在任何节点上，可以在相应的NameNode启动之前或之后启动ZKFC。
-
-2. 应该进行哪些额外的监控
-
-	应该在运行NameNode的每个主机上添加监视，以确保ZKFC保持运行。例如，在某些类型的ZooKeeper故障中，ZKFC可能意外退出，应重新启动以确保系统准备好自动故障转移。
-
-	此外，应该监视ZooKeeper仲裁中的每个服务器。如果ZooKeeper崩溃，则自动故障转移将不起作用。
-
-3. 如果Zookeeper集群崩溃怎么办？
-
-	如果ZooKeeper集群崩溃，则不会触发自动故障转移。不过，HDFS将继续运行，不会产生任何影响。当ZooKeeper重新启动时，HDFS将无问题地重新连接。
-
-4. 可以指定一个NameNode为Active状态首选吗？
-
-	不，目前不支持。首先启动的NameNode将变为活动的。可以选择按特定顺序启动群集，以便首选节点首先启动。
-
-5. 配置自动故障转移时，如何启动手动故障转移？
-
-	即使配置了自动故障转移，也可以使用相同的hdfs haadmin命令启动手动故障转移。它将执行协调的故障转移。
