@@ -409,9 +409,9 @@ public class MaxTemperatureMapper extends Mapper<LongWritable, Text, Text, IntWr
 		String line = value.toString();
 		String year = line.substring(15, 19);
 		int airTemperature;
- 
-		if (line.charAt(87) == '+') { // parseInt doesn't like leading plus
-										// signs
+        
+        // parseInt doesn't like leading plus signs
+		if (line.charAt(87) == '+') { 
 			airTemperature = Integer.parseInt(line.substring(88, 92));
 		} else {
 			airTemperature = Integer.parseInt(line.substring(87, 92));
