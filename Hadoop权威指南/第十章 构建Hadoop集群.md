@@ -1,3 +1,5 @@
+[TOC]
+
 # 第十章 构建Hadoop集群
 
 本章介绍如何在一个计算机集群上构建Hadoop系统，尽管在单机上运行HDFS、MapReduce和YARN有助于学习，但是要想执行一些有价值的工作，必须在多节点系统上运行。
@@ -10,7 +12,7 @@ Apache Hadoop项目及相关的项目为每次发布提供了二进制（和源�
 
 **Packages**
 
-从Apache Bigtop项目及所有Hadoop供应商那里都可以获取RPM和Debian包。这些包比压缩包有更多的优点，它们提供了一个一致性的文件系统布局，可以作为一个整体进行测试哒样可以知道Hadoop和Hive的多个版本能够在一起运行），并且它们可以和配置管理工具如Puppet一起运行。
+从Apache Bigtop项目及所有Hadoop供应商那里都可以获取RPM和Debian包。这些包比压缩包有更多的优点，它们提供了一个一致性的文件系统布局，可以作为一个整体进行测试这样可以知道Hadoop和Hive的多个版本能够在一起运行），并且它们可以和配置管理工具如Puppet一起运行。
 
 **Hadoop 集群管理工具**
 
@@ -81,7 +83,7 @@ public interface DNSToSwitchMapping {
 }
 ```
 
-`resolve()`函数的输入参数names描述IP地址列表，返回响应的网络位置字符串列表。`net.topology.node.switch.mapping.impl`配属性实现了接口，namenode和资源管理器均采用它来解析工作节点的网络位置。
+`resolve()`输入参数描述IP地址列表，返回响应网络位置。`net.topology.node.switch.mapping.impl`配属性实现了接口，namenode和资源管理器均采用它来解析工作节点的网络位置。
 
 在上例的网络拓扑中，可将node1、node2和node3映射到/rack1，将node4、node5和node6映射到/rack2中。
 
@@ -198,7 +200,7 @@ yarn ./start-yarn.sh
 
 同样，还提供了stop-dfs.sh和stop.yarn.sh脚本用于停止由相应的启动脚本启动的守护进程。
 
-这些脚本是至上使用了hadoop-daemon.sh脚本(YARN中是yarn-daemon.sh脚本)启动和停止Hadoop守护进程。如果使用了前面提到的脚本，那么不能直接调用hadoop-deamon.sh。但是如果需要从另一个系统或从自己的脚本来控制Hadoop守护进程，hadoop-deamon.sh脚本是一个很好的切人点。类似的，当需要一个主机集上启动相同的守护进程时，使用hadoop-deamons.sh（带有"s”）会很方便。
+这些脚本实质上使用了hadoop-daemon.sh脚本(YARN中是yarn-daemon.sh脚本)启动和停止Hadoop守护进程。如果使用了前面提到的脚本，那么不能直接调用hadoop-deamon.sh。但是如果需要从另一个系统或从自己的脚本来控制Hadoop守护进程，hadoop-deamon.sh脚本是一个很好的切人点。类似的，当需要一个主机集上启动相同的守护进程时，使用hadoop-deamons.sh(带有"s")会很方便。
 
 最后，仅有一个MapReduce守护进程，即作业历史服务器，是以mapred用户身份以以下命令启动的：
 
@@ -229,15 +231,15 @@ mapred -jobhistory-daemon.sh start historyserver
 
 | 文件名称                   | 格式          | 描述                                                         |
 | -------------------------- | ------------- | ------------------------------------------------------------ |
-| hadoop-env.sh              | Bash脚本      | 脚本中要用到的环境变，以运行Hadoop                           |
-| mapred-env.sh              | Bash脚本      | 脚本中要用到的环境变最，以运行MapReduce(覆盖hadoop-env.sh中设置的变量) |
+| hadoop-env.sh              | Bash脚本      | 脚本中要用到的环境变量，以运行Hadoop                         |
+| mapred-env.sh              | Bash脚本      | 脚本中要用到的环境变最，以运行MapReduce(会覆盖hadoop-env.sh中设置的变量) |
 | yarn-env.sh                | Bash脚本      | 脚本中要用到的环境变量，以运行YARN(覆盖hadoop-env.sh中设置的变量） |
 | core-site.xml              | Hadoop配置XML | Hadoop Core的配置项，例如HDFS、MapReduce和YARN常用的I/O设置等 |
 | hdfs-site.xml              | Hadoop配置XML | Hadoop守护进程的配置项，包括namenode、辅助namenode和datanode等 |
 | mapred-site.xml            | Hadoop配置XML | MapReduce守护进程的配置项，包括作业历史服务器                |
 | yarn-site.xml              | Hadoop配置XML | YARN守护进程的配置项，包括资源管理器、web应用代理服务器和节点管理器(node manager) |
-| slaves                     | 纯文本        | 运行datanode和节点管理器的机器列表（每行一个）               |
-| hadoop-metrics2.proterties | Java属性      | 控制如何在Hadoop上发布度量的属性（参11.2.2节）               |
+| slaves                     | 纯文本        | 运行datanode和节点管理器的机器列表(每行一个)                 |
+| hadoop-metrics2.proterties | Java属性      | 控制如何在Hadoop上发布度量的属性(参11.2.2节)                 |
 | log4j.properties           | Java属性      | 系统日志文件、namenode审计日志、任务JVM进程的任务日志的属性,参见6.5.6节 |
 | hadoop-policy.xml          | Hadoop配置XML | 安全模式下运行Hadoop时的访问控制列表的配置项                 |
 
@@ -415,6 +417,7 @@ Hadoop的配置属性之多简直让人眼花缭乱。本节讨论对于真实�
     <value>resourcemanager</value>
   </property>
   
+  <!--存储本地化文件的目录列表 -->
   <property>
     <name>yarn.nodemanager.local-dirs</name>
     <value>/disk1/nm-local-dir,/disk2/nm-local-dir</value>
@@ -483,15 +486,15 @@ Hadoop的配置属性之多简直让人眼花缭乱。本节讨论对于真实�
 | ----------------------------------- | ------------------- | ------------------------------ | ------------------------------------------------------------ |
 | yarn.resourcemanager.hostname       | 主机名              | 0.0.0.0                        | 运行资源管理器的机器主机名                                   |
 | yarn.resourcemanager.address        | 主机名和端口号      | ${yarn.hostname}:8032          | 运行资源管理器的RPC服务器的主机名和端口                      |
-| yarn.nodemanager.local-dirs         | 逗号分隔的 目录名称 | ${hadoop.tmp.dir}/nm-local-dir | 目录列表，节点管理器允许容器将中间数据存于其中。当应用结束时，数据被清除 |
+| yarn.nodemanager.local-dirs         | 逗号分隔的 目录名称 | ${hadoop.tmp.dir}/nm-local-dir | 目录列表，节点管理器允许容器将中间数据和工作文件存于其中。当应用结束时，数据被清除 |
 | yarn.nodemanager.aux-services       | 逗号分隔的 服务名称 |                                | 节点管理器运行的附加服务列表。每项服务由属性所定义的类实现。默认情况下，不指定附加服务 |
-| yarn.nodemanager.resource.memorymb  | int                 | 8192                           | 节点管理器运行的容器可以分配到的物理内存容量（单位是MB)      |
+| yarn.nodemanager.resource.memorymb  | int                 | 8192                           | 节点管理器运行的容器可以分配到的物理内存容量(单位是MB)       |
 | yarn.nodemanager.vmem-pmem-ratio    | float               | 2.1                            | 容器所占的虚拟内存和物理内存之比。该值指示了虚拟内存的使用可以超过所分配内存的量 |
 | yarn.nodemanager.resource.cpuvcores | int                 | 8                              | 节点管理器运行的容器可以分配到的CPU核数目                    |
 
 #### 3. YARN和MapReduce中的内存设置
 
-与MapReduce1的基于slot的模型相比，YARN以更精细化的方式来管理内存。YARN不会立刻指定一个节点上可以运行的map和reduceslot的最大数目，相反，它允许应用程序为一个任务请求任意规模的内存(在限制范围内)。在YARN管理模型中，节点管理器从一个内存池中分配内存，因此，在一个特定节点上运行的任务数量取决于这些任务对内存的总需求量，而不简单取决于固定的slot数量。
+与MapReduce1的基于slot的模型相比，YARN以更精细化的方式来管理内存。YARN不会立刻指定一个节点上可以运行的map和reduce slot的最大数目，相反，它允许应用程序为一个任务请求任意规模的内存(在限制范围内)。在YARN管理模型中，节点管理器从一个内存池中分配内存，因此，在一个特定节点上运行的任务数量取决于这些任务对内存的总需求量，而不简单取决于固定的slot数量。
 
 计算为一个运行容器的节点管理器分配多少内存要取决于机器上的物理内存。每个Hadoop守护进程使用1000MB内存，因此需要2000MB内存来运行1个datanode和1个节点管理器。为机器上运行的其他进程留出足够的内存后，通过将配置属性`yarn.nodemanager.resource.memory.mb`设置为总分配量(单位是MB)，剩余的内存就可以被指定给节点管理器的容器使用了。默认是8192MB，对于大多数设置来说太低了。
 
