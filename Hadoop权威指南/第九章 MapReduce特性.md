@@ -1,12 +1,14 @@
+[TOC]
+
 # 第九章 MapReduce特性
 
 本章探讨MapReduce的一些高级特性，其中包括计数器、数据集的排序和连接。
 
 ## 9.1 计数器
 
-在许多情况下，用户需要了解待分析的数据，尽管这并非所要执行的分析任务的核心内容。以统计数据集中无效记录数目的任务为例，如果发现无效记录的比例 相当高，那么就需要认真思考为何存在如此多无效记录。是所采用的检测程序存在 缺陷，还是数据集质量确实很低，包含大量无效记录？如果确定是数据集的质量问 题，则可能需要扩大数据集的规模，以增大有效记录的比例，从而进行有意义的 分析。 
+在许多情况下，用户需要了解待分析的数据，尽管这并非所要执行的分析任务的核心内容。以统计数据集中无效记录数目的任务为例，如果发现无效记录的比例相当高，那么就需要认真思考为何存在如此多无效记录。是所采用的检测程序存在缺陷，还是数据集质量确实很低，包含大量无效记录？如果确定是数据集的质量问 题，则可能需要扩大数据集的规模，以增大有效记录的比例，从而进行有意义的分析。 
 
-计数器是收集作业统计信息的有效手段之一，用于质量控制或应用级统计。计数器还可以辅助诊断系统故障。如果需要将日志信息传输到map或reduce任务，更好的方法通常是尝试传输计数器值以监测某一特定事件是否发生。对于大型分布式作业 而言，使用计数器更为方便。首先，获取计数器值比输出日志更方便，其次，根据 计数器值统计特定事件的发生次数要比分析一堆日志文件容易得多。
+计数器是收集作业统计信息的有效手段之一，用于质量控制或应用级统计。计数器还可以辅助诊断系统故障。如果需要将日志信息传输到map或reduce任务，更好的方法通常是尝试传输计数器值以监测某一特定事件是否发生。对于大型分布式作业 而言，使用计数器更为方便。首先，获取计数器值比输出日志更方便，其次，根据计数器值统计特定事件的发生次数要比分析一堆日志文件容易得多。
 
 ### 9.1.1 内置计数器
 
@@ -24,7 +26,7 @@ Hadoop为每个作业维护若干个内置计数器，以描述多项指标。�
 | FiIeOutputFormat计数器 | org.apache.hadoop.mapreduce.lib.output.FileOutputFormatCounter | 表9-5 |
 | 作业计数器             | org.apache.hadoop.mapreduce.JobCounter                       | 表9-6 |
 
-各组要么包含任务计数器(在任务处理过程中不断更新)，要不包含作业计数器(在作业处理过程中不断更新)。这两种类型将在后续章节中进行介绍。
+各组要么包含任务计数器(在任务处理过程中不断更新)，要么包含作业计数器(在作业处理过程中不断更新)。这两种类型将在后续章节中进行介绍。
 
 #### 1. 任务计数器
 
@@ -41,22 +43,22 @@ Hadoop为每个作业维护若干个内置计数器，以描述多项指标。�
 | 计数器名称                                         | 说明                                                         |
 | -------------------------------------------------- | ------------------------------------------------------------ |
 | map输人的记录数(MAP_INPUT_RECORDS）                | 作业中所有map已处理的输人记录数。每次RecordReader读到一条记录并将其传给map的map()函数时，该计数器的值递增 |
-| 分片（split）的原始字节数(SPLIT_RAW_BYTES)         | 由map读取的输人-分片对象的字节数。这些对象描述分片元数据（文件的位移和长度），而不是分片的数据自身，因此总规模是小的 |
+| 分片(split)的原始字节数(SPLIT_RAW_BYTES)           | 由map读取的输人-分片对象的字节数。这些对象描述分片元数据(文件的位移和长度)，而不是分片的数据自身，因此总规模是小的 |
 | map输出的记录数(MAP_OUTPUT_RECORDS)                | 作业中所有map产生的map输出记录数。每次某一个map 的OutputCollector调用collect()方法时，该计数器的值增加 |
-| map输出的字节数(MAP_OUTPUT_BYTES)                  | 作业中所有map产生的耒经压缩的输出数据的字节数·每次某一个map的OutputCollector调用collect()方法时，该计数器的值增加 |
+| map输出的字节数(MAP_OUTPUT_BYTES)                  | 作业中所有map产生的未经压缩的输出数据的字节数，每次一个map的OutputCollector调用collect()方法时，该计数器的值增加 |
 | map输出的物化字节数(MAP_OUTPUT_MATERIALIZED_BYTES) | map输出后确实写到磁盘上的字节数；若map输出压缩功能被启用，则会在计数器值上反映出来 |
-| combine输人的记录数(COMBINE_INPUT_RECORDS)         | 作业中所有combiner(如果有）已处理的输人记录数。combiner的迭代器每次读一个值，该计数器的值增加。注意：本计数器代表combiner已经处理的值的个数，并非不同的键组数（后者并无实所意文，因为对于combiner而言，并不要求每个键对应一个组，详情参见2.4.2节和7.3节 |
+| combine输人的记录数(COMBINE_INPUT_RECORDS)         | 作业中所有combiner(如果有)已处理的输人记录数。combiner的迭代器每次读一个值，该计数器的值增加。注意：本计数器代表combiner已经处理的值的个数，并非不同的键组数（后者并无实所意文，因为对于combiner而言，并不要求每个键对应一个组，详情参见2.4.2节和7.3节 |
 | combine输出的记录数(COMBINE_OUTPUT_RECORDS)        | 作业中所有combiner(如果有)已产生的输出记录数。每当一个combiner的OutputCollector调用collect()方法时，该计数器的值增加 |
 | reduce输人的组(REDUCE_INPUT_GROUPS）               | 作业中所有reducer已经处理的不同的码分组的个数。每当某一个reducer的reduce()被调用时，该计数器的值增加 |
-| reduce输人的记录数(REDUCE_INPUT_RECORDS)           | 作业中所有reducer已经处理的输人记录的个数。每当某个reducer的迭代器读一个值时，该计数器的值增加。如果所有reducer已经处理数完所有输人，則该计数器的值与计数器"map输出的记录"的值相同 |
+| reduce输人的记录数(REDUCE_INPUT_RECORDS)           | 作业中所有reducer已经处理的输人记录的个数。每当某个reducer的迭代器读一个值时，该计数器的值增加。如果所有reducer已经处理数完所有输人，則该计数器的值与计数器MAP_OUTPUT_RECORDS的值相同 |
 | reduce输出的记录数(REDUCE_OUTPUT_RECORDS）         | 作业中所有map已经产生的reduce输出记录数。每当某个reducer的OutputCollector调用collect()方法时，该计数器的值增加 |
 | reduce经过shuffle的字节数(REDUCE_SHUFFLE_BYTES)    | 由shume复制到reducer的map输出的字节数                        |
 | 溢出的记录数(SPILLED_RECORDS)                      | 作业中所有map和reduce任务溢出到磁的记录数                    |
 | CPU毫秒(CPU_MILLISECONDS)                          | 一个任务的总CPU时间，以毫秒为单位，可由/proc/cpuinfo获取     |
-| 物理内存字节数(PHYSICAL_MEMORY_BYTES）             | 一个任务所用的物理内存，以字节数为单位，可 由/proc/meminfo获取 |
+| 物理内存字节数(PHYSICAL_MEMORY_BYTES）             | 一个任务所用的物理内存，以字节数为单位，可由/proc/meminfo获取 |
 | 虚拟内存字节数(VIRTUAL_MEMORY_BYTES）              | 一个任务所用虚拟内存的字节数，由/proc/meminfo而'面获取       |
-| 有效的堆字节数(COMMITTED_HEAP_BYTES)               | 在JVM中的总有效内存最（以字节为单位），可由Runtime. getRuntime().totalMemory()获取 |
-| GC运行时间毫秒数(GC_TIME_MILLIS)                   | 在任务执行过程中，垃圾收集器(garbage collection）花费的时间（以毫秒为单位），可由GarbageCollector MXBean. getCollectionTime()获取 |
+| 有效的堆字节数(COMMITTED_HEAP_BYTES)               | 在JVM中的总有效内存最(以字节为单位)，可由Runtime. getRuntime().totalMemory()获取 |
+| GC运行时间毫秒数(GC_TIME_MILLIS)                   | 在任务执行过程中，垃圾收集器(garbage collection）花费的时间(以毫秒为单位)，可由GarbageCollector MXBean. getCollectionTime()获取 |
 | 由shuffle传输的map输出数(SHUFFLED_MAPS)            | 由shuffle传输到reducer的map输出文件数，详情参见7.3节         |
 | 失敗的shuffle数(FAILED_SHUFFLE)                    | shuffle过程中，发生map输出拷贝错误的次数                     |
 | 被合并的map输出数(MERGED_MAP_OUTPUTS）             | shuffle过程中，在reduce端合并的map输出文件数                 |
@@ -67,9 +69,9 @@ Hadoop为每个作业维护若干个内置计数器，以描述多项指标。�
 | ------------------------------------------ | ------------------------------------------------------------ |
 | 文件系统的读字节数(BYTES_READ）            | 由map任务和reduce任务在各个文件系统中读取的字节数，各个文件系统分别对应一个计数器，文件系统可以是Local、 HDFS、S3等 |
 | 文件系统的写字节数(BYTES_WRITTEN）         | 由map任务和reduce任务在各个文件系统中写的字节数              |
-| 文件系统读操作的数量(READ_OPS)             | 由map任务和reduce任务在各个文件系统中进行的读操作的数量（例如，open操作，filestatus操作） |
-| 文件系统大规模读操作的数最(LARGE_READ_OPS) | 由map和reduce任务在各个文件系统中进行的大规模读操作（例如，对于一个大容量目录进行list操作）的数 |
-| 文件系统写操作的数最(WRITE_OPS)            | 由map任务和reduce任务在各个文件系统中进行的写操作的数量（例如，create操作，append操作） |
+| 文件系统读操作的数量(READ_OPS)             | 由map任务和reduce任务在各个文件系统中进行的读操作的数量(例如，open操作，filestatus操作) |
+| 文件系统大规模读操作的数最(LARGE_READ_OPS) | 由map和reduce任务在各个文件系统中进行的大规模读操作(例如，对于一个大容量目录进行list操作)的数 |
+| 文件系统写操作的数最(WRITE_OPS)            | 由map任务和reduce任务在各个文件系统中进行的写操作的数量(例如，create操作，append操作) |
 
 ​													**表9-4 内置的FileInputFormat任务计数器**
 
@@ -81,7 +83,7 @@ Hadoop为每个作业维护若干个内置计数器，以描述多项指标。�
 
 | 计数器名称                | 说明                                                         |
 | ------------------------- | ------------------------------------------------------------ |
-| 写的字节数(BYTES_WRITTEN) | 由map任务（针对仅含map的作业）或者reduce任务通过FileOutputFormat写的字节数 |
+| 写的字节数(BYTES_WRITTEN) | 由map任务(针对仅含map的作业)或者reduce任务通过FileOutputFormat写的字节数 |
 
 #### 2. 作业计数器
 
@@ -91,9 +93,9 @@ Hadoop为每个作业维护若干个内置计数器，以描述多项指标。�
 
 | 计数器名称                                 | 说明                                                         |
 | ------------------------------------------ | ------------------------------------------------------------ |
-| 启用的map任务数(TOTAL_LAUNCHED_MAPS）      | 启动的map任务数，包括以“推测执行”方式启动的任务，详情参见7．4．2节 |
+| 启用的map任务数(TOTAL_LAUNCHED_MAPS）      | 启动的map任务数，包括以“推测执行”方式启动的任务，详情参见7．4.2节 |
 | 启用的reduce任务数(TOTAL_LAUNCHED_REDUCES) | 启动的reduce任务数，包括以“推测执行”方式启动的任务           |
-| 启用的uber任务数(TOTAL_LAIÆHED_UBERTASKS)  | 启用的uber任务数，详情参见7.1节                              |
+| 启用的uber任务数(TOTAL_LAUNCHED_UBERTASKS) | 启用的uber任务数，详情参见7.1节                              |
 | uber任务中的map数(NUM_UBER_SUBMAPS)        | 在uber任务中的map数                                          |
 | uber任务中的reduce数(NUM_UBER_SUBREDUCES)  | 在über任务中的reduce数                                       |
 | 失败的map任务数(NUM_FAILED_MAPS）          | 失败的map任务数，用户可以参见7.2.1节对任务失败的讨论，了解失败原因 |
@@ -105,7 +107,7 @@ Hadoop为每个作业维护若干个内置计数器，以描述多项指标。�
 | 机架本地化的map任务数(RACK_LOCAL_MAPS)     | 与输人数据在同一机架范围内但不在同一节点上的map任务数        |
 | 其他本地化的map任务数(OTHER_LOCAL_MAPS）   | 与输人数据不在同一机架范围内的map任务数。 由于机架之间的带宽资源相对较少，Hadoop会尽量让map任务靠近输人数据执行，因此该计数器值一般比较小。详情参见图2-2 |
 | map任务的总运行时间(MILLIS_MAPS)           | map任务的总运行时间，单位毫秒。包括以推测执行方式启动的任务。可参见相关的度量内核和内存使用的计数器(VCORES_MILLIS_MAPS和MB_MILLIS_MAPS） |
-| reduce任务的总运行时间(MILLIS_REDUCES)     | reduce任务的总运行时间，单位毫秒。包括以推滌执行方式启动的任务。可参见相关的度量内核和内存使用的计数器(VQES_MILLIS_REÄRES和t•B_MILLIS_REUKES) |
+| reduce任务的总运行时间(MILLIS_REDUCES)     | reduce任务的总运行时间，单位毫秒。包括以推测执行方式启动的任务。可参见相关的度量内核和内存使用的计数器(VCORES_MILLIS_REÄRES和MB_MILLIS_REUKES) |
 
 ### 9.1.2 用户自定义计数器
 
@@ -443,7 +445,7 @@ public class SortByTemperatureUsingTotalOrderPartitioner extends Configured impl
     SequenceFileOutputFormat.setOutputCompressorClass(job, GzipCodec.class);
     SequenceFileOutputFormat.setOutputCompressionType(job,CompressionType.BLOCK);
     job.setPartitionerClass(TotalOrderPartitioner.class);
-    InputSampler.Sampler<IntWritable, Text> sampler =new InputSampler.RandomSampler<IntWritable, Text>(0.1, 10000, 10);
+    InputSampler.Sampler<IntWritable, Text> sampler =new        InputSampler.RandomSampler<IntWritable, Text>(0.1, 10000, 10);
     InputSampler.writePartitionFile(job, sampler);
     // Add to DistributedCache
     Configuration conf = job.getConfiguration();
@@ -643,7 +645,7 @@ MapReduce能够执行大型数据集之间的"连接"(join)操作，但是，自
 
 连接操作如果由mapper执行，则称为"map端连接"；如果由reducer执行，则称为"reduce端连接"。
 
-如果两个数据集的规模均很大，以至于没有哪个数据集可以被完全复制到集群的每个节点，我们仍然可以使用MapReduce来进行连接，至于到底采用map端连接还是reduce端连接，则取决于数据的组织方式。最常见的一个例子便是用户数据库和用户活动日志（例如访问日志)。对于一个热门服务来说，将用户数据库（或日志）分发到所有MapReduce节点中是行不通的。
+如果两个数据集的规模均很大，以至于没有哪个数据集可以被完全复制到集群的每个节点，我们仍然可以使用MapReduce来进行连接，至于到底采用map端连接还是reduce端连接，则取决于数据的组织方式。最常见的一个例子便是用户数据库和用户活动日志(例如访问日志)。对于一个热门服务来说，将用户数据库(或日志)分发到所有MapReduce节点中是行不通的。
 
 ### 9.3.1 Mapper端连接
 
@@ -837,7 +839,7 @@ public class SideData extends Configured implements Tool{
 
 对于使用GenericOptionsParser的工具来说，用户可以使用-files选项指定待分发的文件，文件内容包括：以逗号间隔开的URI列表。文件可以存在放本地文件系统，HDFS或其他Hadoop可读的文件系统。如果尚未指定文件系统，则这些文件被默认是本地的。
 
-用户可以使用`-archives`选项向自己的任务中复制存档文件（JAR文件、ZIP文件、tar文件和gzipped tar文件），这些文件会被解档到任务节点。-libjars选项会把JAR文件添加到mapper和reducer任务的类路径中。如果作业JAR文件并非包含很多库JAR文件，这点会很有用。
+用户可以使用`-archives`选项向自己的任务中复制存档文件(JAR文件、ZIP文件、tar文件和gzipped tar文件)，这些文件会被解档到任务节点。-libjars选项会把JAR文件添加到mapper和reducer任务的类路径中。如果作业JAR文件并非包含很多库JAR文件，这点会很有用。
 
 以下指定显示如何使用分布式缓存来共享元数据文件，从而得到气象站的名称：
 
