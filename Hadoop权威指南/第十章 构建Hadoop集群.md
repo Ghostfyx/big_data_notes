@@ -521,7 +521,7 @@ Hadoop的配置属性之多简直让人眼花缭乱。本节讨论对于真实�
 | mapreduce.map.java.opts    | String | -Xmx200m | JVM选项，针对运行map任务的子进程                             |
 | mapreduce.reduce.java.opts | String | -Xmx200m | JVM选项，针对运行reduce任务的子进程                          |
 
-例如，假设`mapred.child.java.opts`被设为`-Xmx 800m`，`mapreduce.map.java.opts`被设置为默认1024MB，当map任务启动时，节点管理器会为该任务分配一个1024MB的容器(在该任务运行期间，节点管理器的内存池也会相应降低1024MB)，并启动配置为最大堆为800MB的任务JVM。注意，JVM进程内存的开销将比堆的规模大，开销依赖于所使用的本地库(native libraries)、永久生成空间(permanent generation space)等因素。需要注意的是，JVM进程(包括它创建的任何进程，如Streaming)所使用的物理内存必须不超出分配给它的内存大小(1024MB)。如果一个容器使用的内存超过所分配的量，就会被节点管理器终止，并标记为失败。
+例如，假设`mapred.child.java.opts`被设为`-Xmx 800m`，`mapreduce.map.java.opts`被设置为默认1024MB，当map任务启动时，节点管理器会为该任务分配一个1024MB的容器(在该任务运行期间，节点管理器的内存池也会相应降低1024MB，并启动配置为最大堆为800MB的任务JVM。注意，JVM进程内存的开销将比堆的规模大，开销依赖于所使用的本地库(native libraries)、永久生成空间(permanent generation space)等因素。需要注意的是，JVM进程(包括它创建的任何进程，如Streaming)所使用的物理内存必须不超出分配给它的内存大小(1024MB)。如果一个容器使用的内存超过所分配的量，就会被节点管理器终止，并标记为失败。
 
 YARN有一个最小和最大内存分配量。默认情况下，最小内存分配量是1024MB(由`yarn.scheduler.minimum-allocation-mb`设置)，最大分配量是8192MB(由`yarn.scheduler.maximum-allocation-mb`设置）。
 
