@@ -82,5 +82,115 @@
 
 ## 3. 基于存储策略的数据移动
 
+在已经存在的文件/目录上设置新的存储策略将更改命名空间中的策略，但不会在存储介质之间物理移动块。 以下2个选项将允许用户根据新策略集移动块。因此，一旦用户更改或设置了文件/目录上的新策略，用户还应执行以下选项之一以实现所需的数据移动。 注意，两个选项不能同时运行。
 
+### 3.1 Storage Policy Satisfier (SPS)
+
+当用户更改文件/目录上的存储策略时，用户可以调用HdfsAdmin API `StoragePolicy()`以按照新策略集移动块。 在namenode外部运行的SPS工具会定期扫描并发现新策略集和放置的物理块之间的存储不匹配。 将会尽对用户调用 `StoragePolicy()`的文件。如果SPS标记了文件要移动的块，会将调度块移动任务到数据节点。
+
+SPS可以作为Namenode外部的外部服务启用，也可以动态禁用，无需重新启动Namenode。
+
+可以参考[Storage Policy Satisfier(SPS) (HDFS-10285)](https://issues.apache.org/jira/browse/HDFS-10285)详细设计文档。
+
+注意：当用户在目录上调用satisfyStoragePolicy() API时，SPS将扫描所有子目录并计算所有文件来满足策略。
+
+HdfsAdmin API :` public void satisfyStoragePolicy(final Path path) throws IOException`
+
+具体配置如下：
+
+- **dfs.storage.policy.satisfier.mode** 用于启用NN外部的外部服务或禁用SPS。 支持以下类型：external, none。external表示启用了SPS，none表示禁用，默认none。
+- **dfs.storage.policy.satisfier.recheck.timeout.millis** 重新检查datanode中已处理的块存储移动命令超时
+- **dfs.storage.policy.satisfier.self.retry.timeout.millis** Datanode报告块移动结果的超时时间
+
+### 3.2 Mover-一种新的数据迁移工具
+
+添加了新的数据迁移工具来归档数据。 该工具类似于Balancer。 它会定期扫描HDFS中的文件，以检查块放置是否满足存储策略。 对于违反存储策略的块，它将副本复制到其他存储类型，以满足存储策略要求。 请注意，只要有可能，它总是尝试在同一节点内移动块副本。 如果这是不可能的(例如，当一个节点没有目标存储类型时)，它将通过网络将块副本复制到另一个节点。
+
+命令如下：
+
+```
+hdfs mover [-p <files/dirs> | -f <local file name>]
+```
+
+参数说明：
+
+| 名称                  | 描述                                                  |
+| --------------------- | ----------------------------------------------------- |
+| -p <files/dirs>       | 指定以空格分隔的要迁移的HDFS文件/目录列表             |
+| -f < local file name> | 指定一个本地文件，其中包含要迁移的HDFS文件/目录的列表 |
+
+注意：当同时省略-p和-f选项时，默认路径为根目录。
+
+**管理员注意事项：**
+
+StoragePolicySatisfier和Mover工具无法同时运行。 如果Mover实例已经触发并正在运行，则启动时将禁用SPS。 在这种情况下，管理员应确保Mover执行完成，然后再次启用外部SPS服务。 同样，如果已经启用SPS，则无法运行Mover。 如果管理员希望明确运行Mover工具，则应确保先禁用SPS，然后再运行Mover。 
+
+## 4. 存储策略命令
+
+### 4.1 列举存储策略
+
+列举所有存储策略。
+
+命令：
+
+```
+hdfs storagepolicies -listPolicies
+```
+
+### 4.2 设置存储策略
+
+为文件或目录设置存储策略。
+
+命令：
+
+```
+hdfs storagepolicies -setStoragePolicy -path <path> -policy <policy>
+```
+
+参数：
+
+| 参数名称           | 描述                 |
+| ------------------ | -------------------- |
+| `-path <path>`     | 指向目录或文件的路径 |
+| `-policy <policy>` | 存储策略名称         |
+
+### 4.3 移除存储策略
+
+取消对文件或目录的存储策略。 使用unset命令后，将应用最近祖先的存储策略，并且如果没有关于任何祖先的策略，则将应用默认存储策略。
+
+```
+hdfs storagepolicies -unsetStoragePolicy -path <path>
+```
+
+### 4.4 获取存储策略
+
+获取文件或目录的存储策略。
+
+```
+hdfs storagepolicies -getStoragePolicy -path <path>
+```
+
+### 4.5 Satisfy Storage Policy
+
+根据当前文件/目录存储策略调度移动块。
+
+```
+hdfs storagepolicies -satisfyStoragePolicy -path <path>
+```
+
+### 4.6 在NN外部启用外部服务或在不重新启动Namenode的情况下禁用SPS
+
+如果管理员想在Namenode运行时切换SPS功能的模式。首先需要为配置文件(hdfs-site.xml)中的配置项`dfs.storage.policy.satisfier.mode`更新所需的值(external或none)。然后运行以下Namenode reconfig命令：
+
+```
+hdfs dfsadmin -reconfig namenode host:ipc_port start
+```
+
+### 4.7 外部开启SPS服务
+
+如果管理员想启动外部sps。首先需要在配置文件(hdfs-site.xml)中使用external配置dfs.storage.policy.satisfier.mode属性，然后运行Namenode reconfig命令。 请确保配置文件中的网络拓扑配置与namenode相同，此群集将用于匹配目标节点。 之后，使用以下命令启动外部sps服务:
+
+```
+hdfs –daemon start sps
+```
 
