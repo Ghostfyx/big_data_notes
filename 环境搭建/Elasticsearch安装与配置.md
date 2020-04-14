@@ -14,18 +14,64 @@
 
 ## 2. Elasticsearch 下载
 
-Linux下载地址：
+由于高版本elasticsearch需要高版本JDK支持，因此使用5.6.16版本+JDK8，Linux下载地址：
 
 ```
-https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-7.6.2-linux-x86_64.tar.gz
+wget https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-5.6.16.tar.gz
 ```
 
 解压安装包：
 
 ```
-tar -zxvf elasticsearch-7.6.2-linux-x86_64.tar.gz
+tar -zxvf elasticsearch-5.6.16.tar.gz
 ```
 
 ## 3, 修改配置文件
 
-注意要安装低版本Elasticsearch，Elasticsearch内置JDK，elasticsearch-7.6.2需要JDK11的支持。因此卸载elasticsearch-6，安装
+注意要安装低版本Elasticsearch，Elasticsearch内置JDK，elasticsearch-7.6.2需要JDK11的支持。因此卸载elasticsearch-7.6.2，安装elasticsearch-5.6.16。修改/conf/elasticsearch.yml
+
+```yaml
+cluster.name: my_elasticsearch1
+node.name: elasticsearch1_node1
+path.data: /home/hadoop/elasticsearch/data
+path.logs: /home/hadoop/elasticsearch/logs
+bootstrap.memory_lock: false
+network.host: 192.168.234.101
+http.port: 9200
+```
+
+## 4. 安装遇到错误
+
+### 4.1 
+
+```
+[2018-05-18T17:44:59,658][INFO ][o.e.b.BootstrapChecks    ] [gFOuNlS] bound or publishing to a non-loopback address, enforcing bootstrap checks
+ERROR: [2] bootstrap checks failed
+[1]: max file descriptors [4096] for elasticsearch process is too low, increase to at least [65536]
+[2]: max virtual memory areas vm.max_map_count [65530] is too low, increase to at least [262144]
+[1]: max file descriptors [65535] for elasticsearch process is too low, increase to at least [65536]
+```
+
+编辑 /etc/security/limits.conf，追加以下内容；
+
+```
+* soft nofile 300000
+* hard nofile 300000
+* soft nproc 102400
+* soft memlock unlimited
+* hard memlock unlimited
+```
+
+### 4.2 
+
+```
+[2]: max virtual memory areas vm.max_map_count [65530] is too low, increase to at least [262144]
+```
+
+修复方法：
+
+```sh
+echo "vm.max_map_count=262144" > /etc/sysctl.conf
+sysctl -p
+```
+
