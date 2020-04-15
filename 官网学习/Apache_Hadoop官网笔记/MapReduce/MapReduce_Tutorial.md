@@ -423,7 +423,7 @@ MRAppMaster在单独的jvm中将Mapper/Reducer任务作为子进程执行。
 </property>
 ```
 
-### 4.5 内存管理
+##### 内存管理
 
 用户或管理员也可以使用mapred.child.ulimit设定运行的子任务的最大虚拟内存。mapred.child.ulimit的值以（KB)为单位，并且必须大于或等于-Xmx参数传给JavaVM的值，否则VM会无法启动。
 
@@ -431,7 +431,7 @@ MRAppMaster在单独的jvm中将Mapper/Reducer任务作为子进程执行。
 
 框架的一些组成部分的内存也是可配置的。在map和reduce任务中，性能可能会受到并发数的调整和写入到磁盘的频率的影响。文件系统计数器监控作业的map输出和输入到reduce的字节数对于调整上述参数是具有参考性的。
 
-### 4.4 Map Parameters
+##### Map Parameters
 
 Map发出的数据将会被序列化在缓存中，元数据将会储存在统计缓存。正如接下来的配置所描述的，当序列化缓存和元数据超过设定的临界值，缓存中的内容将会后台中写入到磁盘中而map将会继续输出记录。当缓存完全满了溢出之后，map线程将会阻塞。当map任务结束，所有剩下的记录都会被写到磁盘中并且磁盘中所有文件块会被合并到一个单独的文件。减小溢出值将减少map的时间，但更大的缓存会减少mapper的内存消耗。
 
@@ -442,16 +442,109 @@ Map发出的数据将会被序列化在缓存中，元数据将会储存在统�
 
 如果在进行溢写的过程中超过了任一溢写阈值，收集将继续进行直到溢写完成为止。 例如，如果将mapreduce.map.sort.spill.percent设置为0.33，那么剩余的缓存将会继续填充而溢写会继续运行，而下一个溢写将会包含所有的收集的记录，而当值为0.66，将不会产生另一个溢写。也就是说，临界值是定义触发器，而不是阻塞溢写。
 
-### 4.5 Shuffle/Reduce Parameters
+##### Shuffle/Reduce Parameters
 
 正如前面提到的，每个reduce都会通过HTTP在内存中拿到Partitioner分配好的数据并且定期地合并数据写到磁盘中。如果map输出的中间值都进行压缩，那么每个输出都会减少内存的压力。下面这些设置将会影响reduce之前的数据合并到磁盘的频率和reduce过程中分配给map输出的内存。
 
 | Name                                          | Type  | Description                                                  |
 | :-------------------------------------------- | :---- | :----------------------------------------------------------- |
-| mapreduce.task.io.soft.factor                 | int   | Specifies the number of segments on disk to be merged at the same time. It limits the number of open files and compression codecs during merge. If the number of files exceeds this limit, the merge will proceed in several passes. Though this limit also applies to the map, most jobs should be configured so that hitting this limit is unlikely there. |
-| mapreduce.reduce.merge.inmem.thresholds       | int   | The number of sorted map outputs fetched into memory before being merged to disk. Like the spill thresholds in the preceding note, this is not defining a unit of partition, but a trigger. In practice, this is usually set very high (1000) or disabled (0), since merging in-memory segments is often less expensive than merging from disk (see notes following this table). This threshold influences only the frequency of in-memory merges during the shuffle. |
-| mapreduce.reduce.shuffle.merge.percent        | float | The memory threshold for fetched map outputs before an in-memory merge is started, expressed as a percentage of memory allocated to storing map outputs in memory. Since map outputs that can’t fit in memory can be stalled, setting this high may decrease parallelism between the fetch and merge. Conversely, values as high as 1.0 have been effective for reduces whose input can fit entirely in memory. This parameter influences only the frequency of in-memory merges during the shuffle. |
-| mapreduce.reduce.shuffle.input.buffer.percent | float | The percentage of memory- relative to the maximum heapsize as typically specified in `mapreduce.reduce.java.opts`- that can be allocated to storing map outputs during the shuffle. Though some memory should be set aside for the framework, in general it is advantageous to set this high enough to store large and numerous map outputs. |
-| mapreduce.reduce.input.buffer.percent         | float | The percentage of memory relative to the maximum heapsize in which map outputs may be retained during the reduce. When the reduce begins, map outputs will be merged to disk until those that remain are under the resource limit this defines. By default, all map outputs are merged to disk before the reduce begins to maximize the memory available to the reduce. For less memory-intensive reduces, this should be increased to avoid trips to disk. |
+| mapreduce.task.io.soft.factor                 | int   | 指定磁盘上要同时合并的段数。 它限制了合并期间打开的文件和压缩编解码器的数量。 如果文件数超过此限制，则合并将分几次进行。 尽管此限制也适用于map，应该配置大多数作业，以便在那里不太可能达到此限制。 |
+| mapreduce.reduce.merge.inmem.thresholds       | int   | 在合并到磁盘之前提取到内存中的已排序reduce输出的数量。 像前面map的溢写阈值一样，这不是定义分区的单位，而是触发器。 实际上，通常将其设置为很高 (1000)或禁用(0)，因为合并内存段通常比从磁盘合并代价小。 此阈值仅影响shuffle期间内存中合并的频率。 |
+| mapreduce.reduce.shuffle.merge.percent        | float | 在内存中合并开始之前，map输出到内存的阈值，表示为分配用于在内存中存储map输出的内存百分比。 由于无法容纳在内存中的map输出可能会停顿，因此将其设置为高可能会降低获取和合并之间的并行度。 相反，1.0的值可有效减少其输入完全适合内存的情况。 此参数仅影响shuffle期间内存中合并的频率。 |
+| mapreduce.reduce.shuffle.input.buffer.percent | float | 相对于最大堆(通常在`mapreduce.reduce.java.opts'中指定)的内存所占的百分比，在shuffle期间分配该值来存储map输出。尽管应该为框架留出一些内存，但是通常最好将其设置得足够高以存储大量的大量map输出 |
+| mapreduce.reduce.input.buffer.percent         | float | 相对于最大堆大小的内存百分比，在reduce过程中可以保留的map输出。当reduce开始时，map输出将合并到磁盘，直到剩余的输出低于此定义的资源限制。默认情况下，在reduce开始最大化可用于reduce的内存之前，所有映射输出都将合并到磁盘。当Reduce需要的内存比较少的时候，可以适当调大该值以减少访问磁盘的次数 |
 
+**其他说明：**
 
+- 如果一个map输出大于分配给用于复制map输出的内存的25%，那么将会直接写到磁盘不会通过内存进行临时缓存。
+- 当运行一个combiner，高的临界值和大的缓存的设置可能没效果。在map输出进行合并之前，combiner将会进行溢出写到磁盘的操作。 在某些情况下，可以通过花费大量资源来合并map输出(使磁盘溢出量较小并并行化溢出和获取)，而不是大幅度增加缓冲区大小，从而缩短时间。
+- 当合并内存中的map数据到磁盘来开始recuder时，如果磁盘中已经存在部分切片数据的话，那么必须将内存中的数据作为磁盘中间数据的一部分来进行合并操作。
+
+##### Configured Parameters
+
+以下属性在作业配置中本地化，以执行每个任务：
+
+| Name                       | Type    | Description                                    |
+| :------------------------- | :------ | :--------------------------------------------- |
+| mapreduce.job.id           | String  | The job id                                     |
+| mapreduce.job.jar          | String  | job.jar location in job directory              |
+| mapreduce.job.local.dir    | String  | The job specific shared scratch space          |
+| mapreduce.task.id          | String  | The task id                                    |
+| mapreduce.task.attempt.id  | String  | The task attempt id                            |
+| mapreduce.task.is.map      | boolean | Is this a map task                             |
+| mapreduce.task.partition   | int     | The id of the task within the job              |
+| mapreduce.map.input.file   | String  | The filename that the map is reading from      |
+| mapreduce.map.input.start  | long    | The offset of the start of the map input split |
+| mapreduce.map.input.length | long    | The number of bytes in the map input split     |
+| mapreduce.task.output.dir  | String  | The task’s temporary output directory          |
+
+说明：流式任务的执行过程中，名字以mapreduce开头的参数会被改变。符号（.）会变成（_）。例如，mapreduce.job.id会变成mapreduce_job_id和mapreduce.job.jar会变成mapreduce_job_jar。在Mapper/Reducer中使用带下划线的参数名来获得对应的值。
+
+##### Task Log
+
+NodeManager 会读取stdout、sterr和任务的syslog并写到${HADOOP_LOG_DIR}/userlogs。
+
+##### **Distributing Libraries**
+
+分布是缓存也可以在map/reduce任务中用来分布式存储jars和本地库。子JVM经常将它的工作路径添加到java.librarypath和LD_LIBRARY_PATH。因此缓存的库能通过System.loadLibrary 或者 System.load 来加载。更多关于如何通过分布式缓存来加载第三方库参考Native Libraries.
+
+#### 4.4.4 作业的提交与监控
+
+Job类是用户Job与ResourceManager交互的主要接口。
+
+Job提供了提交作业，跟踪其进度，访问组件任务的报告和日志，获取MapReduce集群的状态信息等工具。
+
+Job的提交过程涉及：
+
+- 检查作业的输入和输出
+- 计算作业的InputSplit值
+- 如果必要的话，设置分布式缓存
+- 将作业的jar和配置复制到FileSystem上的MapReduce系统目录
+- 将作业提交到ResourceManager并可以选择监视其状态
+
+作业历史记录文件也记录到用户指定的目录mapreduce.jobhistory.intermediate-done-dir和mapreduce.jobhistory.done-dir中，默认为作业输出目录。
+
+用户可以使用以下命令查看指定目录中的历史日志摘要：mapred job -history output.jhist此命令将打印作业详细信息，失败和终止的提示详细信息。 可以使用以下命令查看有关作业的更多详细信息，例如成功的任务和为每个任务进行的任务尝试，如下所示：mapred job -history all output.jhist
+
+ 通常，用户使用Job类来创建应用程序，描述作业的各个方面，提交作业并监视其进度。
+
+#### Job Control
+
+用户可能需要链接MapReduce作业才能完成无法通过单个MapReduce作业完成的复杂任务。 这是相当容易的，因为作业的输出通常写入分布式文件系统，并且该输出又可以用作下一个作业的输入。
+
+这也意味着确保Job完成(成功/失败)的责任完全落在用户身上。在这种情况下，各种作业控制选项是
+
+- Job.submit()：将作业提交到集群并立即返回。
+- Job.waitForCompletion(boolean)：将作业提交到集群并等待其完成。
+
+### 4.6 Job Input
+
+InputFormat描述了MapReduce作业的输入规范。
+
+MapReduce框架依靠作业的InputFormat来：
+
+- 验证作业的输入规范
+- 将输入文件拆分为逻辑InputSplit实例，然后将每个实例分配给一个单独的Mapper
+- 提供RecordReader实现，该实现用于从逻辑InputSplit中收集输入记录，以供Mapper处理
+
+基于文件的InputFormat实现(通常是FileInputFormat的子类)的默认行为是根据输入文件的总大小(以字节为单位) 将输入拆分为逻辑InputSplit实例。 但是，输入文件的FileSystem块大小被视为输入拆分的上限。 可以通过`mapreduce.input.fileinputformat.split.minsize`设置拆分大小的下限。
+
+显然，对于许多应用程序而言，基于输入大小的逻辑拆分是不够的，因为必须遵守记录边界。 在这种情况下，应用程序应实现一个RecordReader，后者负责记录边界，并向单个任务提供逻辑InputSplit的面向记录的视图。
+
+TextInputFormat是默认的InputFormat。
+
+如果TextInputFormat是给定作业的InputFormat，则框架将检测带有.gz扩展名的输入文件，并使用适当的CompressionCodec自动将其解压缩。 但是，必须注意，具有上述扩展名的压缩文件无法拆分，并且每个压缩文件均由单个映射器完整处理。
+
+#### InputSplit
+
+InputSplit表示要由单个Mapper处理的数据。
+
+通常，InputSplit呈现输入的面向字节的视图，RecordReader负责处理和呈现面向记录的视图。
+
+FileSplit是默认的InputSplit。 它将mapreduce.map.input.file设置为逻辑split的输入文件路径。
+
+#### RecordReader
+
+RecordReader从InputSplit读取<key, value>对。
+
+通常，RecordReader会转换InputSplit提供的输入的面向字节的视图，并将面向记录的形式呈现给Mapper实现以进行处理。 因此，RecordReader承担处理记录边界的责任，并为任务提供键和值。
