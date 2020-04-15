@@ -19,9 +19,9 @@ Apache Flink擅长处理无界和有界数据，精确的时间控制和状态�
 
 Apache Flink是一个分布式系统，它需要计算资源来执行应用程序。Flink 集成了所有常见的集群资源管理器，例如 [Hadoop YARN](https://hadoop.apache.org/docs/stable/hadoop-yarn/hadoop-yarn-site/YARN.html)、 [Apache Mesos](https://mesos.apache.org/) 和 [Kubernetes](https://kubernetes.io/)，但同时也可以作为独立集群运行(Stand-alone)。
 
-Flink 被设计为能够很好地工作在上述每个资源管理器中，这是通过资源管理器特定(resource-manager-specific)的部署模式实现的。Flink 可以采用与当前资源管理器相适应的方式进行交互。
+Flink 被设计为能够很好地工作在上述每个资源管理器中，通过指定资源管理器(resource-manager-specific)的部署模式实现。Flink 可以采用与当前资源管理器相适应的方式进行交互。
 
-部署Flink应用程序时，Flink会根据应用程序配置的并行性自动标识所需的资源，并从资源管理器请求这些资源。在发生故障时，Flink 通过请求新资源来替换发生故障的容器。提交或控制应用程序的所有通信都是通过REST调用进行的，这可以简化 Flink 与各种环境中的集成。
+部署Flink应用程序时，Flink会根据应用程序配置的并行性自动标识所需的资源，并从资源管理器请求这些资源。在发生故障时，Flink 通过请求新资源来替换发生故障的容器。提交或控制应用程序的所有通信都是通过REST形式调用进行的，这可以简化Flink与各种环境中的集成。
 
 ## 3. 运行任意规模应用
 
