@@ -1,0 +1,23 @@
+# Apache Hadoop YARN
+
+YARN的基本思想是将资源管理和作业调度/监视的功能拆分为单独的守护程序。其基本实现思想使用一个全局资源管理器(ResourceManager, RM)和每个应用程序管理器(ApplicationMaster, AM)。应用程序可以是单个作业或作业的DAG。
+
+ResourceManager和NodeManager组成数据计算框架。 ResourceManager拥有系统中所有应用程序之间资源调度的最终权限。NodeManager作用于每一台机器，负责管理容器、监视其资源使用情况(cpu，内存，磁盘，网络)，并将其报告给ResourceManager/Scheduler。
+
+每个应用程序的ApplicationMaster实际上是框架特定的库，任务是与ResourceManager协商资源，并与NodeManager一起执行和监视任务。
+
+![](../img/yarn_architecture.gif)
+
+ResourceManager有两个主要组件：Scheduler与ApplicationsManager。
+
+调度器负责将资源分配给各种正在运行的应用程序，但要遵循容量，队列等约束。调度器是纯调度程序，因为它不监视或跟踪应用程序的状态。它也不保证由于应用程序故障或硬件故障而重启失败的任务。调度器根据应用程序的资源需求执行调度功能； 它是基于资源容器的抽象概念来实现的，该容器包含诸如内存，cpu，磁盘，网络等元素。
+
+调度器具有可插拔的策略，负责在各种队列、应用程序等之间分配群集资源。现有调度器(例如CapacityScheduler和FairScheduler)将是可插拔插件的示例。
+
+ApplicationsManager负责接受作业提交，协商用于执行应用程序的ApplicationMaster的第一个容器，并在失败时重新启动ApplicationMaster容器。
+
+hadoop-2.x中的MapReduce与以前的稳定版本(hadoop-1.x)保持API兼容性。 这意味着仅通过重新编译，所有MapReduce作业仍应在YARN上保持不变。
+
+YARN通过ReservationSystem支持资源保留，该组件允许用户指定资源随时间和时间限制(例如截止日期)的配置文件，并保留资源以确保重要工作的可预测执行。ReservationSystem会随着时间的推移跟踪资源使用情况，执行预留控制，并动态控制基础调度程序确保预留资源。
+
+为了将YARN扩展到几千个节点，YARN通过YARN Federation功能支持联邦概念(类似于联邦HDFS)。联邦YARN允许透明地将多个子集群组合在一起，使它们看起来像一个大型群集。这可以用于实现更大的规模，并/或允许多个独立集群一起用于非常大的作业，或用于具有跨所有作业容量的租户。
