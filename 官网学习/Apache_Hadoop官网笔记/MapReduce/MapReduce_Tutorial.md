@@ -517,7 +517,7 @@ Job的提交过程涉及：
 - Job.submit()：将作业提交到集群并立即返回。
 - Job.waitForCompletion(boolean)：将作业提交到集群并等待其完成。
 
-### 4.6 Job Input
+### 4.5 Job Input
 
 InputFormat描述了MapReduce作业的输入规范。
 
@@ -548,3 +548,62 @@ FileSplit是默认的InputSplit。 它将mapreduce.map.input.file设置为逻辑
 RecordReader从InputSplit读取<key, value>对。
 
 通常，RecordReader会转换InputSplit提供的输入的面向字节的视图，并将面向记录的形式呈现给Mapper实现以进行处理。 因此，RecordReader承担处理记录边界的责任，并为任务提供键和值。
+
+### 4.6 Job Output
+
+OutputFormat描述MapReduce作业的输出规范。
+
+MapReduce框架依靠作业的OutputFormat来：
+
+- 验证作业的输出规格； 例如，检查输出目录是否不存在
+- 提供用于写入作业输出文件的RecordWriter实现。 输出文件存储在FileSystem中
+
+OutputFormat的默认实现是TextOutputFormat。
+
+#### OutputCommitter
+
+OutputCommitter描述了MapReduce作业输出任务的提交和初始化。
+
+![](../img/outputCommitter.jpg)
+
+MapReduce框架在以下几个方面依赖于作业的OutputCommitter：
+
+1. 初始化期间设置job，例如：在作业初始化期间创建临时输出目录。当作业处于PREP状态时，并且完成初始化任务之后，再由单独的任务来完成作业设置。 设置任务完成后，作业将移至“运行中”状态(共计三个阶段)。
+2. 作业完成后清理作业。 例如，在作业完成后删除临时输出目录。 作业清理由作业结束时的单独任务完成。 清理任务完成后，作业被声明为SUCCEDED / FAILED / KILLED。
+3. 设置任务临时输出。 在任务初始化期间，任务设置是同一任务的一部分。
+4. 提交任务输出。 任务完成后，任务将根据需要提交其输出。
+5. 放弃任务提交。 如果任务失败/被杀死，输出将被清除。 如果任务无法清除(在异常块中)，将启动单独任务使用相同的attempt-id进行清除。
+
+FileOutputCommitter是默认的OutputCommitter。 作业设置/清除任务会占用map或reduce容器，导致NodeManager上可用容器减少。
+
+并且JobCleanup任务，TaskCleanup任务和JobSetup任务具有最高优先级，且顺序最高。
+
+#### Task Side-Effect Files
+
+在某些应用中，组件任务需要创建/写入side-file，这些文件与实际的作业输出文件不同。
+
+在这种情况下，当同一Mapper或Reducer的两个实例(例如：推测任务)尝试同时打开和/或写入文件系统上的同一文件(路径)时，则会发生问题。因此，应用程序不得不不仅为每个任务分配唯一名称，还需要为每个推测任务分配attemptid，例如：attempt_200709221812_0001_m_000000_0。
+
+为避免这些问题，当OutputCommitter为FileOutputCommitter时，MapReduce框架维护一个特殊的` {mapreduce.output.fileoutputformat.outputdir}/_ temporary/_ {taskid}`子目录。{mapreduce.task.output.dir}存储所有推测任务的输出。成功完成任务尝试后， {mapreduce.output.fileoutputformat.outputdir}/_ temporary /_ ​{taskid}中的文件将升级为​{mapreduce.output.fileoutputformat.outputdir}。当然，该框架将放弃尝试失败的子目录。此过程对应用程序完全透明。
+
+#### RecordWriter
+
+RecordWriter将输出<key, value>对写入输出文件。
+
+RecordWriter实现将作业输出写入FileSystem。
+
+## 5. 其他有用特性
+
+#### Submitting Jobs to Queues
+
+用户将作业提交到队列。 队列作为作业的集合，允许系统提供特定的功能。 例如，队列使用ACL来控制哪些用户可以向其提交作业。 队列预计主要由Hadoop Scheduler使用。
+
+Hadoop设置了默认强制性队列。 队列名称在mapreduce.job.queuename属性中定义。 某些作业调度程序(例如，容量调度器)支持多个队列。
+
+作业通过mapreduce.job.queuename或Configuration.set(MRJobConfig.QUEUE_NAME, String)API提交到的队列。 设置队列名称是可选的。 如果提交的作业没有关联的队列名称，则将其提交到“默认”队列。
+
+#### Counters
+
+计数器代表由MapReduce框架或应用程序定义的全局计数器。每个Counter可以是任何Enum类型。 特定Enum的计数器被分成Counters.Group类型的组。
+
+应用可以定义任意计数器(类型为Enum)，并通过map/reduce方法中的Counters.incrCounter方法更新它们。 最后，这些计数器由框架全局汇总。
