@@ -607,3 +607,85 @@ Hadoop设置了默认强制性队列。 队列名称在mapreduce.job.queuename�
 计数器代表由MapReduce框架或应用程序定义的全局计数器。每个Counter可以是任何Enum类型。 特定Enum的计数器被分成Counters.Group类型的组。
 
 应用可以定义任意计数器(类型为Enum)，并通过map/reduce方法中的Counters.incrCounter方法更新它们。 最后，这些计数器由框架全局汇总。
+
+### **DistributedCache**
+
+分布式缓存有效地分布存储应用专用的、大的、只读的文件。
+
+分布是缓存是MapReduce框架提供给应用用于缓存文件(文本，档案、jar包和其他)。
+
+应用通过urls (hdfs://)在Job中指定文件的缓存路径。分布式缓存假设指定hdfs://urls中的文件在当前的FileSystem已经存在。
+
+MR框架将在工作节点上执行任何任务之前将必要的文件复制到工作节点。它高效的原因如下：每个任务只复制一次文件，并且能够缓存未存档的存档。
+
+DistributedCache跟踪缓存文件的修改时间戳。显然，在执行作业时，应用程序或外部不应该修改缓存文件。
+
+DistributedCache可用于分发简单的只读数据/文本文件和更复杂的类型，如归档文件和jar。归档文件(zip、tar、tgz和tar.gz文件)指的是未存档到worker节点的文件。文件有执行权限设置。
+
+文件可以通过设置mapreduce.job.cache.{files|archives}属性来分发文件/归档文件。如果有更多的文件需要存储，那么在用逗号隔开路径即可。该属性还可以通过`Job.addCacheFile(URI)]/Job.addCacheArchive(URI)[Job.setCacheFiles(URI[])/ [Job.setCacheArchives(URI[\])`来设置，URL的格式为`hdfs://host:port/absolute-path#link-name`。文件可以通过命令`- cacheFile/- cacheArchive`分发文件。
+
+分布式缓存也可以用作一个基本的软件分发机制用于map/reduce任务。它也可以用来分布存储jar包和本地库。Job.addArchiveToClassPath(Path)或Job.addFileToClassPath(Path) api可以用来缓存文件/jars并且子Jvm也会将它们添加到类路径下。通过设置`mapreduce.job.classpath.{files|archives}`属性也可以达到同样效果。类似地，链接到任务的工作目录中的缓存文件可用于分发本机库并加载它们。
+
+### Private and Public DistributedCache Files
+
+- 私有分布式缓存文件被缓存在局部路径属于运行作业需要这些文件的用户。这些文件只可以被指定用户的所有任务和Job使用，而这些节点的其他用户就不能使用。分布式缓存文档在它所上传的文件系统(通常为HDFS)中的权限因此也变成私有的。如果这些文档没有全局读取权限，或者它的路径没有全局的可执行查找权限，那么这些文档就是私有的。
+- 公有分布式缓存文档被缓存在一个全局路径并且文件被设置为对所有用户都可见。这些文件可以被所有节点上的所有用户分享。分布式缓存文件在它所上传的文件系统(通常为HDFS)上的权限变成公有的。如果文件具有全局可读权限，并且他的路径具有全局的可执行查找权限，那么它就是公有的。即，如果用户想要使文件对所有用户可见可操作，那么文件权限必须是全局可读且其路径权限必须是全局可执行。
+
+#### Profiling
+
+分析器是一个工具可以用来获取2到3个Java内置分析器关于map和reduce的分析样本。
+
+用户可以通过 mapreduce.task.profile来指定系统是否要收集某个作业的一些任务分析信息。这个值也可以通过`Configuration.set(MRJobConfig.TASK_PROFILE, boolean) `api来设置。如果这个值为真，那么任务分析将会生效。分析器的信息将储存在用户的log路径下。该属性默认是不生效的。
+
+一旦用户配置了该属性，那么就可以通过 `mapreduce.task.profile.{maps|reduces} `来设置MapReduce任务的范围。这个值也可以通过`Configuration.set(MRJobConfig.NUM_{MAP|REDUCE}_PROFILES, String) `api来设置。默认的值为0-2。
+
+用户也可以通过配置`mapreduce.task.profile.params`属性来指定分析器的的参数。这个值也可以通过api `Configuration.set(MRJobConfig.TASK_PROFILE_PARAMS, String)`来设置。假如字符串里面包含%s，那么将会在任务执行时被替换成分析输出文件的名字。这些参数将会在命令行中传输给任务所在的子JVM。默认的参数的值为`- agentlib:hprof=cpu=samples,heap=sites,force=n,thread=y,verbose=n,file=%s`。
+
+### Debugging
+
+MapReduce框架提供一个工具用来运行用户提供的脚本用于调试。当一个MapReduce任务失败，用户可以运行调试脚本，去处理任务log。脚本可以读取任务的stdout、stderr输出、syslog和jobconf。调试脚本的stdout和sterr输出将会作为Job UI的一部分显示出来。
+
+接下来的部分我们将讨论如何提交一个调试脚本到作业中。脚本文件需要提交和存储在框架中。
+
+### How to distribute the script file
+
+用户需要使用分布式缓存来分发和符号链接脚本文件。
+
+### How to submit the script
+
+通过mapreduce.map.debug.script 和nd mapreduce.reduce.debug.script属性来分别设置map和reduce调试脚本是快速的提交调试脚本的方法。这些属性可以通过Configuration.set(MRJobConfig.MAP_DEBUG_SCRIPT, String)和Configuration.set(MRJobConfig.REDUCE_DEBUG_SCRIPT, String)来设置。在流式编程模式，可以通过命令行选项 -mapdebug 和 –reducedebug来分别设置map和reduce的调试脚本用于调试。
+
+脚本的参数是任务的标准输出、标准错误、系统日志和作业配置文档。调试命令，运行在某个Mapreduce任务失败的节点上，是`$script $stdout $stderr $syslog $jobconf $program`。
+
+拥有C++程度的Pipes项目在命令中增加第五个参数。因此命令如下：`$script $stdout $stderr $syslog $jobconf $program`
+
+### Data Compression
+
+Hadoop MapReduce提供一个功能让应用开发指定压缩方式用于map输出的中间数据和job-outputs(reduce的输出)。它也捆绑着实现zlib压缩算法的压缩编码器。支持gzip、bzip2、snappy和lz4文件格式的文档。
+
+Hadoop也提供上述编码器的本地实现，因为性能和Java库不支持的原因。更多关于它们的使用细节和可用性可参考官方文档。
+
+### Intermediate Outputs
+
+应用可以通过`Configuration.set(MRJobConfig.MAP_OUTPUT_COMPRESS, boolean) `api来设置是否对map的输出进行压缩和`Configuration.set(MRJobConfig.MAP_OUTPUT_COMPRESS_CODEC, Class) `api指定压缩编码器。
+
+### Job Outputs
+
+应用可以通过`FileOutputFormat.setCompressOutput(Job, boolean) `api来控制是否对作业输出进行压缩和通过`FileOutputFormat.setOutputCompressorClass(Job, Class)` api来设置压缩编码器。
+
+如果作业的输出是以SequenceFileOutputFormat格式存储的，那么需要序列化。压缩类型通过SequenceFileOutputFormat.setOutputCompressionType(Job, SequenceFile.CompressionType) api来指定。
+
+### Skipping Bad Records
+
+Hadoop提供一个选项当执行map输入时可以跳过某一组确定的坏数据。应用可以通过SkipBadRecords 类来控制特性。
+
+当map任务中某些输入一定会导致崩溃时可以使用这个属性。这通常发生在map函数中的bug。通常地，用户会修复这些bug。然而，某些时候不一定有用。这个bug可能是第三方库导致的，例如那些源代码看不了的。在这些情况当中，尽管经过多次尝试都没有办法完成任务，作业也会失败。通过这个属性，只有一小部分的坏数据周边数据会丢失，这对于某些应用是可以接受的。
+
+这个属性默认是失效的。可以通过SkipBadRecords.setMapperMaxSkipRecords(Configuration, long)和SkipBadRecords.setReducerMaxSkipGroups(Configuration, long)使其生效。
+
+当这个属性生效，框架在一定数量的map失败后会进入“跳过模式”。在跳过模式中，map任务维持被处理数据的范围，看看SkipBadRecords.setAttemptsToStartSkipping(Configuration, int)。为了达到这个目标，框架依赖于记录计数器。看看[SkipBadRecords.COUNTER_MAP_PROCESSED_RECORDS](http://hadoop.apache.org/docs/r2.6.5/api/org/apache/hadoop/mapred/SkipBadRecords.html) 和 [SkipBadRecords.COUNTER_REDUCE_PROCESSED_GROUPS](http://hadoop.apache.org/docs/r2.6.5/api/org/apache/hadoop/mapred/SkipBadRecords.html)的说明。这个计数器是的框架可以知道有多少条记录被成功处理了，因此来找出哪些记录范围会引起任务崩溃。在进一步的尝试中，这些范围的记录会被跳过。**
+
+跳过记录的数目取决于运行的记录计数器的增长频率。建议这个计数器在每天记录处理增加。这在批量处理中可已不太可能实现。在这些情况当中，框架会跳过不良记录附近的额外数据。用户可以通过SkipBadRecords.setMapperMaxSkipRecords(Configuration, long)和SkipBadRecords.setReducerMaxSkipGroups(Configuration, long)来控制跳过记录的数量。框架会试图使用二进制搜索方式来缩窄跳过记录的范围。跳过范围被分成两部分并且只有其中一半会被拿来执行。在接下来的错误当中，框架将会指出哪一半范围包含不良数据。一个任务将会重新执行直到跳过记录或者尝试次数用完。可以通过Job.setMaxMapAttempts(int)和Job.setMaxReduceAttempts(int)来增加尝试次数。
+
+跳过的记录将会以序列化的形式写到HDFS中。可以通过SkipBadRecords.setSkipOutputPath(JobConf, Path)来修改路径。
+
