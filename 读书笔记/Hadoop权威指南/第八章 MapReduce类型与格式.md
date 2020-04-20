@@ -941,7 +941,7 @@ public class PartitionByStationYearUsingMultipleOutputs extends Configured
 }
 ```
 
-在生成输出的reducer中，在`setup()`方法中构造一个MultipleOutputs实例，`reduce()`方法中使用multipleOutputs实例来写输出，而不是context。`write()`方法作用于键、值、名字。最后产生的输出是：station_identifier_r-nnnnn。
+在生成输出的reducer中，在`setup()`方法中构造一个MultipleOutputs实例，`reduce()`方法中使用multipleOutputs实例来写输出，而不是``context.write()`方法作用于键、值、名字。最后产生的输出是：station_identifier_r-nnnnn。
 
 运行产生的输入文件命名如下：
 
