@@ -1,0 +1,2 @@
+# Hadoop YARN Resource Configuration
+
