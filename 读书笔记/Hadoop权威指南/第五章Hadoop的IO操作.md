@@ -1018,7 +1018,7 @@ sort -r 1 \
 
 ### 5.4.2 MapFile
 
-MapFile是已经排过序的SequenceFile，它有索引，所以可以按键查找。索引自身就是一个SequenceFile，包含了map中的一小部分键（默认情况下，是每隔128个键）。由于索引能够加载进内存，因此可以提供对主数据文件的快速查找。主数据文件则是另一个SequenceFile，包含了所有的map条目，这些条目都按照键顺序进行了排序。
+MapFile是已经排过序的SequenceFile，它有索引，所以可以按键查找。索引自身就是一个SequenceFile，包含了map中的一小部分键(默认情况下，是每隔128个键)。由于索引能够加载进内存，因此可以提供对主数据文件的快速查找。主数据文件则是另一个SequenceFile，包含了所有的map条目，这些条目都按照键顺序进行了排序。
 
 MapFile提供了一个用于读写的、与SequenceFile非常类似的接口，当使用MapFile.Writer进行写操作时，map条目必须顺序添加，否则会抛出IOException异常。
 

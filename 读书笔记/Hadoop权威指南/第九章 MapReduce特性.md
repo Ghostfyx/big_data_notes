@@ -216,7 +216,7 @@ TemperatureQuality
 
 #### 1. 动态计数器
 
-上述代码还使用了动态计数器，这是一种不由Java枚举类型定义的计数器。由于Java枚举类型的字段在编译阶段就必须指定，因而无法使用枚举类型动态新建计数器。范例8．1统计气温质量的分布，尽管通过格式规范定义了可以取的值，但相比之下，使用动态计数器来产生实际值更加方便。在该例中，context对象的`getcounter()`方法有两个string类型的输人参数，分别代表组名称和计数器名称：`public Counterget counter(String groupName，String counterName）`。
+上述代码还使用了动态计数器，这是一种不由Java枚举类型定义的计数器。由于Java枚举类型的字段在编译阶段就必须指定，因而无法使用枚举类型动态新建计数器。范例8.1统计气温质量的分布，尽管通过格式规范定义了可以取的值，但相比之下，使用动态计数器来产生实际值更加方便。在该例中，context对象的`getcounter()`方法有两个string类型的输人参数，分别代表组名称和计数器名称：`public Counterget counter(String groupName，String counterName）`。
 
 鉴于Hadoop需先将Java枚举类型转变成String类型，再通过RPC发送计数器值，这两种创建和访问计数器的方法（即使用枚举类型和String类型）事实上是等价的。相比之下，枚举类型易于使用，还提供类型安全，适合大多数作业使用。如果某些特定场合需要动态创建计数器，则可以使用String接口。
 
@@ -287,7 +287,7 @@ Records with missing temperature fields：5.47％
 
 下面将按气温字段对天气数据集排序，由于气温字段是有符号整数，所以不能将该字段视为Text对象并以字典顺序排序。反之，要用顺序文件存储数据，其lntwritable键代表气温(并且正确排序)，其Text值就是数据行。
 
-范例9·3中的MapReduce作业只包含map任务，它过滤输人数据并移除包含有无效气温的记录。各个map创建并输出一个块压缩的顺序文件。相关指令如下：
+范例9-3中的MapReduce作业只包含map任务，它过滤输人数据并移除包含有无效气温的记录。各个map创建并输出一个块压缩的顺序文件。相关指令如下：
 
 ```sh
 ％hadoop jar hadoop-examples.jar SortDataPreprocessor input/ncdc/all input/ncdc/all-seq
