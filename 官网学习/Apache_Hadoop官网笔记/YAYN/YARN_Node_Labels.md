@@ -69,8 +69,98 @@
 
 - 执行`yarn rmadmin -replaceLabelsOnNode “node1[:port]=label1 node2=label2” [-failOnUnknownNodes]`。将label1添加到node1，将label2添加到node2。 如果用户未指定端口，则会将标签添加到节点上运行的所有NodeManager。 如果设置了选项-failOnUnknownNodes，则如果指定的节点未知，该命令将失败。
 
-在**Distributed** 节点类型下配置节点到标签的映射。
+- 在**Distributed** 节点类型下配置节点到标签的映射。
 
-| Property                            | Value |
-| :---------------------------------- | :---- |
-| yarn.node-labels.configuration-type |       |
+| Property                                                     | Value                                                        |
+| :----------------------------------------------------------- | :----------------------------------------------------------- |
+| yarn.node-labels.configuration-type                          | 需要在RM中设置为Distributed，从NM中已配置的节点标签获取节点到标签映射的映射 |
+| yarn.nodemanager.node-labels.provider                        | 在RM中将yarn.node-labels.configuration-type配置为distributed时，管理员可以通过在NM中配置此参数来配置节点标签的提供程序。管理员将provider设置为config、script或类名。 配置的类需要扩展org.apache.hadoop.yarn.server.nodemanager.nodelabels.NodeLabelsProvid如果配置为config，则使用ConfigurationNodeLabelsProvider；如果配置为 script，则将使用ScriptNodeLabelsProvider |
+| yarn.nodemanager.node-labels.resync-interval-ms              | NM与RM同步其节点标签的时间间隔。 NM将每配置x个间隔将其加载的标签以及心跳发送给RM。 即使未修改标签，也需要重新同步，因为admin可能已删除了NM提供的群集标签。 默认值为2分钟 |
+| yarn.nodemanager.node-labels.provider.fetch-interval-ms      | 当使用config、script或扩展AbstractNodeLabelsProvider类来配置yarn.nodemanager.node-labels.provider时，则定期从节点标签提供者中检索节点标签。 此配置用于定义间隔时间。 如果配置了-1，则仅在初始化期间从提供程序中检索节点标签。 默认为10分钟 |
+| yarn.nodemanager.node-labels.provider.fetch-timeout-ms       | 如果将yarn.nodemanager.node-labels.provider配置为script，则此配置将提供超时时间，在此之后它将中断查询节点标签的脚本。 默认为20分钟。 |
+| yarn.nodemanager.node-labels.provider.script.path            | 要运行的节点标签脚本。 以NODE_PARTITION:开头的脚本输出行将被视为节点标签分区。 如果脚本输出的多行具有此模式，则将考虑最后一行。 |
+| yarn.nodemanager.node-labels.provider.script.opts            | 传递给节点标签脚本的参数                                     |
+| yarn.nodemanager.node-labels.provider.configured-node-partition | 当使用config配置yarn.nodemanager.node-labels.provider时，ConfigurationNodeLabelsProvider从该参数获取分区标签 |
+
+- 在**Delegated-Centralized** 节点类型下配置节点到标签的映射
+
+| Property                                                    | Value                                                        |
+| :---------------------------------------------------------- | :----------------------------------------------------------- |
+| yarn.node-labels.configuration-type                         | 需要设置为delegated-centralized，以从RM中已配置的Node Labels Provider获取节点到标签的映射 |
+| yarn.resourcemanager.node-labels.provider                   | 如果将yarn.node-labels.configuration-type配置为delegated-centralized，则管理员应配置该类以通过ResourceManager提取节点标签。 配置的类需要扩展org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsMappingProvider 。 |
+| yarn.resourcemanager.node-labels.provider.fetch-interval-ms | 如果将 yarn.node-labels.configuration-type配置为delegated-centralized，则会定期从节点标签提供程序中检索节点标签。 此配置用于定义间隔。 如果配置了-1，则在每个节点注册后，仅从提供者中检索节点标签一次。 默认为30分钟。 |
+
+### 3.5 节点标签调度器的配置
+
+- 容量调度器配置
+
+| Property                                                     | Value                                                        |
+| :----------------------------------------------------------- | :----------------------------------------------------------- |
+| yarn.scheduler.capacity.< queue-path>.capacity               | 设置可以访问属于DEFAULT分区节点的队列百分比。 每个父母下直系子女的默认能力总和必须等于100。 |
+| yarn.scheduler.capacity.< queue-path>.accessible-node-labels | 管理员需要指定每个队列可以访问的标签，并用逗号分隔，例如“ hbase，storm”表示队列可以访问标签hbase和storm。所有队列都可以访问不带标签的节点，用户无需指定。 如果用户未指定此字段，它将从其父级继承。 如果用户要明确指定只能访问没有标签的节点的队列，只需将空格作为值即可。 |
+| yarn.scheduler.capacity.< queue-path>.accessible-node-labels.<label>.capacity | 设置队列可以访问属于< label>分区的节点的百分比。 每个父母下直系子女的< label>分区容量总和必须等于100。默认情况下为0。 |
+| yarn.scheduler.capacity.< queue-path>.accessible-node-labels.<label>.maximum-capacity | 类似于yarn.scheduler.capacity.<queue-path>.maximum-capacity，用于每个队列的标签的最大容量。 默认情况下为100 |
+| yarn.scheduler.capacity.< queue-path>.default-node-label-expression | 假设默认节点标签为hbase，则表示：如果应用程序提交到队列时未在资源请求中指定节点标签，则它将使用hbase作为default-node-label-expression。 默认情况下，它为空，因此应用程序将从没有标签的节点获取容器。 |
+
+节点标签配置示例：
+
+假设集群有以下队列结构
+
+```
+  							root
+            /     |    \
+     engineer    sales  marketing
+```
+
+集群中有5个节点(主机名= h1..h5)，每个节点都有24G内存和24个vcore。 5个节点中有1个具有GPU(假设是h5)。 因此，管理员在h5中添加了GPU标签。
+
+假设用户具有如下的Capacity Scheduler配置(在此处使用key = value以提高可读性)：
+
+```xml
+yarn.scheduler.capacity.root.queues=engineering,marketing,sales
+yarn.scheduler.capacity.root.engineering.capacity=33
+yarn.scheduler.capacity.root.marketing.capacity=34
+yarn.scheduler.capacity.root.sales.capacity=33
+
+yarn.scheduler.capacity.root.engineering.accessible-node-labels=GPU
+yarn.scheduler.capacity.root.marketing.accessible-node-labels=GPU
+
+yarn.scheduler.capacity.root.engineering.accessible-node-labels.GPU.capacity=50
+yarn.scheduler.capacity.root.marketing.accessible-node-labels.GPU.capacity=50
+
+yarn.scheduler.capacity.root.engineering.default-node-label-expression=GPU
+```
+
+可以看到root.engineering/marketing/sales.capacity=33，因此每个子队列的资源都可以保证等于总资源的1/3且没有分区。 因此每个子队列都可以使用h1..h4的1/3资源，即$24*4*\frac{1}{3}=32G,32vcores$。
+
+而且只有engineering/marketing队列有权访问GPU分区(请参阅 root.<queue-name>.accessible-node-labels)。
+
+每个engineering/marketing队列均已保证资源等于partition=GPU的资源的1/2。 因此他们每个人都可以使用h5的1/2资源，即$24 * 0.5 =12G mem，12vcores$。
+
+注意：
+
+- 完成CapacityScheduler的配置后，执行yarn rmadmin -refreshQueues以应用配置更改
+- 进入RM Web UI的调度页面，查看配置是否成功
+
+## 4. 制定应用的节点标签
+
+应用程序可以使用以下Java API来指定要请求的节点标签：
+
+- `ApplicationSubmissionContext.setNodeLabelExpression(..)`为应用程序的所有容器设置节点标签表达式
+- `ResourceRequest.setNodeLabelExpression(..)`为单个资源请求设置节点标签表达式。 这可以覆盖ApplicationSubmissionContext中设置的节点标签表达式
+- 在ApplicationSubmissionContext中设置`setAMContainerResourceRequest.setNodeLabelExpression`以指定应用程序主容器的预期节点标签
+
+## 5. 监控
+
+### 5.1 Web UI监控
+
+在Web UI上可以看到以下与标签相关的字段：
+
+- Nodes page: [http://RM-Address:port/cluster/nodes](http://rm-address:port/cluster/nodes), 可以获取每个节点的节点标签
+- Node labels page: [http://RM-Address:port/cluster/nodelabels](http://rm-address:port/cluster/nodelabels)，可以获取类型(exclusive/non-exclusive)，活动节点管理器的数量，每个分区的总资源
+- Scheduler page: [http://RM-Address:port/cluster/scheduler](http://rm-address:port/cluster/scheduler)，可以获得每个队列的标签相关设置以及队列分区的资源使用情况
+
+### 5.2 命令行监控
+
+- 使用`yarn cluster --list-node-labe`命令获取集群所有节点标签
+- 使用`yarn node -status <NodeId>`命令获取节点状态，包括给定节点上的标签
