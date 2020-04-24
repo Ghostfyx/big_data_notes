@@ -44,7 +44,7 @@ Flink 提供了丰富的时间语义支持：
 
 Flink 根据抽象程度分层，提供了三种不同的 API。每一种 API 在简洁性和表达力上有着不同的侧重，并且针对不同的应用场景。
 
-![](./img/api-stack.jpg)
+![](../img/api-stack.jpg)
 
 #### 1.4.1 ProcessFunction
 

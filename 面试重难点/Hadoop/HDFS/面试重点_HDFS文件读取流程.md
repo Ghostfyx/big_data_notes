@@ -2,7 +2,7 @@
 
 客户端、HDFS、namenode、datanode之间数据流在文件读取时，事件发生顺序如下所示：
 
-![](../../img/3-2.jpg)
+![HDFS文件读取流程](../../img/3-2.jpg)
 
 （1）客户端通过调用`FileSystem`对象的`open()`方法打开文件，对于HDFS来说这个文件是`DistributedFileSystem`。
 

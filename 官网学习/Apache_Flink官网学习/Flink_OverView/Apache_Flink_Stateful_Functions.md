@@ -2,7 +2,7 @@
 
 Stateful Function是一种能够简化构建分布式有状态应用程序的API。它基于持久化状态，能够以强一致性来保证动态交互。
 
-![](img/statefun-overview.jpg)
+![](../img/statefun-overview.jpg)
 
 ## 1. Stateful Functions Applications
 
@@ -34,7 +34,7 @@ Stateful Function是一种能够简化构建分布式有状态应用程序的API
 
 有状态功能运行时旨在提供一组类似于无服务器功能的属性。
 
-![](./img/statefun-remote.jpg)
+![](../img/statefun-remote.jpg)
 
 运行时基于ApacheFlink构建，具有以下设计原则：
 
@@ -78,7 +78,7 @@ Stateful Function是一种能够简化构建分布式有状态应用程序的API
 
 ## 4. 使用示例：欺诈检测的交易平分
 
-![](./img/model-score.svg)
+![](../img/model-score.svg)
 
 想象一个应用程序接收财务信息并针对超过给定阈值欺诈分数(即欺诈)的每笔交易发出警报。 要使用状态功能构建此示例，可以定义四个不同的功能，每个功能跟踪其自身的状态：
 
