@@ -1,5 +1,6 @@
 # YARN Node Attributes
 
+<<<<<<< HEAD
 ## 1. 概述
 
 节点属性是一种无需资源保证即可描述一个节点的属性的方法。 应用程序可以使用大量这些属性的表达，来为要放置其容器的容器选择正确的节点。
@@ -121,4 +122,16 @@ SchedulingRequest schedulingRequest =
 - 使用`yarn nodeattributes -attributestonodes -attributes <Attributes>`列出每个属性，所有映射的节点以及为每个节点配置的属性值。可以使用-attributes指定的属性
 - 使用`yarn nodeattributes -nodestoattributes -nodes <Host Names>`列出所有属性，以及映射到节点的值，使用-nodes为指定的节点指定
 - 获取节点状态/详情的命令`yarn node -status`，将列出所有与节点关联的属性及其值
+=======
+ ## 1. 概述
+
+节点属性是一种无需资源保证即可描述节点属性的方法。应用程序可以根据节点属性描述，来为要放置其容器的容器选择正确的节点。
+
+## 2. 特性
+
+以下是Node Attributes几个显著的特性：
+
+- 一个节点可以与多个属性关联
+- 值可以与标记到节点的属性关联，目前仅支持字符串类型值
+>>>>>>> ff7cfce9439ab9b173370c58704de0e9b672bce1
 
