@@ -17,7 +17,7 @@
 
 ## 2. 核心思想
 
-![](../img/mapreduce_core_concept.jpg)
+![](../../img/mapreduce_core_concept.jpg)
 
 1）MR分布式的运算程序往往需要分成至少 2 个阶段。
 
@@ -26,4 +26,14 @@
 3）第二个阶段的 ReduceTask 并发实例互不相干，但是他们的数据依赖于上一个阶段的所有 MapTask 并发实例的输出。
 
  4）MapReduce 编程模型只能包含一个 Map 阶段和一个 Reduce 阶段，如果用户的业务逻辑非常复杂，那就只能多个MapReduce程序，串行运行。
+
+## 3. MapReduce进程
+
+一个完整的MapReduce程序在分布式运行时有三类实例进程： 
+
+- MrAppMaster：负责整个程序的过程调度及状态协调
+- MapTask：负责Map阶段的整个数据处理流程
+- ReduceTask：负责Reduce阶段的整个数据处理流程
+
+
 

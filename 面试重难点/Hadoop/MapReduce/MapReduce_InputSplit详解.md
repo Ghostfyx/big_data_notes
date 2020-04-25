@@ -23,7 +23,7 @@ Hadoop 2.x默认的block大小是128MB，Hadoop 1.x默认的block大小是64MB�
 
 	
 
-```
+```java
 minSize=max{minSplitSize,mapred.min.split.size} 
 
 maxSize=mapred.max.split.size/Long.MAX_VALUE
