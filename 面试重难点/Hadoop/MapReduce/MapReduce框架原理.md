@@ -18,7 +18,35 @@ MapTask的并行度决定 Map 阶段的任务处理并发度，进而影响到�
 
 **Job提交流程源码**
 
+```java
+submit();
+// 1 建立连接
+connect();
+// 1）创建提交 Job 的代理
+new Cluster(getConfiguration());
+// （1）判断是本地 yarn 还是远程
+initialize(jobTrackAddr, conf);
+// 2 提交 job
+submitter.submitJobInternal(Job.this, cluster)
+// 1）创建给集群提交数据的 Stag 路径
+Path jobStagingArea =
+JobSubmissionFiles.getStagingDir(cluster, conf);
+// 2）获取 jobid ，并创建 Job 路径
+JobID jobId = submitClient.getNewJobID();
+// 3）拷贝 jar 包到集群
+copyAndConfigureFiles(job, submitJobDir);
+rUploader.uploadFiles(job, jobSubmitDir);
+// 4）计算切片，生成切片规划文件
+writeSplits(job, submitJobDir);
+maps = writeNewSplits(job, jobSubmitDir);
+input.getSplits(job);
+// 5）向 Stag 路径写 XML 配置文件
+writeConf(conf, submitJobFile);
+conf.writeXml(out);
+// 6）提交 Job,返回提交状态
+status = submitClient.submitJob(jobId,
+submitJobDir.toString(), job.getCredentials());
 ```
-waitForCompletion();
-```
+
+![](../../img/mapreduce_job_submit.jpg)
 
