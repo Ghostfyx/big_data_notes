@@ -349,7 +349,7 @@ dataFramesWay.explain()
                          
 ```
 
-从DataFrames和SQL执行计划对比结果：在编写 SQL 查询或编写 DataFrame 代码之间没有性能差异。
+从DataFrames和SQL执行计划对比结果：在编写SQL查询或编写DataFrame代码之间没有性能差异。
 
 执行一个复杂的聚合SQL：
 
@@ -368,7 +368,10 @@ maxSql.show()
 |            Japan|             1548|
 +-----------------+-----------------+
 
-maxDataFrame=flightData2015.groupBy("DEST_COUNTRY_NAME").sum("count").withColumnRenamed("sum(count)", "destination_total").sort(desc("destination_total")).limit(5)
+# DataFrame
+import org.apache.spark.sql.functions.desc
+
+maxDataFrame=flightData2015.groupBy("DEST_COUNTRY_NAME").sum("count").withColumnRenamed("sum(count)", "destination_total").sort(desc("destination_total")).limit(5).show()
 
 +-----------------+-----------------+
 |DEST_COUNTRY_NAME|destination_total|
@@ -382,7 +385,7 @@ maxDataFrame=flightData2015.groupBy("DEST_COUNTRY_NAME").sum("count").withColumn
 
 ```
 
-查看执行计划，现在有 7 个步骤可以回到源数据。
+查看执行计划，现在有7个步骤可以回到源数据。
 
 ```python
 maxDataFrame.explain()
@@ -403,20 +406,20 @@ TakeOrderedAndProject(limit=5, orderBy=[destination_total#102L DESC NULLS LAST],
 
 （1）第一步是读取数据。之前定义了 DataFrame，但是，Spark 实际上并没有读取它，直到在 DataFrame 上调用了一个 action，或者从原始 DataFrame 派生出一个action。 
 
-（2）第二步是分组；当调用 groupBy，最终使用`org.apache.spark.sql.RelationalGroupedDataset`，用于 DataFrame 分组指定但需要用户指定一个聚合,才能进一步查询。
+（2）第二步是分组；当调用 groupBy，最终使用`org.apache.spark.sql.RelationalGroupedDataset`对象，它是一个DataFrame对象，具有指定分组，需要用户指定聚合操作，才能进一步查询。按照键(或键的集合)分组，然后再对每个键对应分局进行聚合操作。
 
-（3）第三步是指定聚合。
+（3）第三步是指定聚合，此处使用sum聚合，这需要输入一个列表达式或一个列名称。sum方法调用的结果是产生一个新的DataFrame，有一个新的表结构，并知道每个列的类型，注意：此处依旧没有执行真正的操作！
 
 （4）第四步是简单的重命名。使用 withColumnRenamed 方法，它接受两个参数，原始列名和新的列名。此时仍然不会执行计算：这只是另一个 transformation 转换! 
 
-（5）第五步对数据进行排序。
+（5）第五步对数据进行排序，将所有行按照destination_total列大小排序
 
 （6）第六步指定一个 limit。这只是指定在最后的 DataFrame 中返回前 5 个值，而不是返回所有数据。 
 
-（7）第七步action 操作。现在，开始真正收集 DataFrame 的结果，Spark 将返回正在执行的语言中的列表或数组。
+（7）第七步action操作。现在才开始真正收集DataFrame的结果，Spark 将返回正在执行的语言中的列表或数组。
 
-对比物流执行计划，可以看出与“概念性计划”并不相符，但所有的部分都在那里。可以看到 limit 语句以及 orderBy(在第一行中)。还可以看到我们的聚合是如何在两个阶段中发生的。
+对比解释执行计划与确切的“概念性计划”并不相符，但所有的步骤都在那里。可以看到 limit 语句以及 orderBy(在第一行中)。还可以看到我们的聚合是如何在两个阶段中发生的。
 
 ## 2.10 结论
 
-本章介绍了 Apache Spark 的基本知识。我们讨论了 transformation 和 action，以及Spark 如何延迟执行 DAG的转换，以优化 DataFrames 的执行计划。还讨论了如何将数据组织成 partition 分区，为处理更复杂的转换设置 stage 阶段。
+本章介绍了 Apache Spark的基本知识。我们讨论了transformation操作和action操作，以及Spark 如何惰性执行转换操作的DAG图来优化DataFrames上的物理执行计划。还讨论了如何将数据组织成 partition 分区，并为处理更复杂的转换设定为多个阶段(stage)。第三章中将介绍庞大的Spark生态系统，并了解Spark中提供的包括流数据处理和机器学习等一些更高级的概念和工具。
