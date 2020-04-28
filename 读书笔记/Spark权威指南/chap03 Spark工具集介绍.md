@@ -1,27 +1,28 @@
-# 第三章 Spark工具集概览
+# 第三章 Spark工具集介绍
 
-在第二章中，在Spark结构化API中引入Spark的核心概念，比如transformation和action操作。这些简单的概念模块是Apache Spark庞大的工具和库生态系统的基础，如图3-1所示，Spark 是由这些原始的(底层api和结构化的api)组成的，然后是一系列用于附加功能的标准库。 
+第二章介绍了Spark的核心概念，包括Spark结构化API的transformation和action操作。这些简单的概念是学习Apache Spark生态系统中众多工具库的基础，如图3-1所示，Spark除了提供这些低级API和结构化API，还包括一系列标准库来提供额外的功能。
 
 ![](./img/3-1.jpg)
 
 ​															**图3-1 Spark APi与标准类库**
 
-Spark的库支持各种不同的计算任务，从图计算和机器学习到流处理，到与其他大量的计算机集群和存储系统集成。本章包括以下内容: 
+Spark库支持各种不同的任务，包括图分析、机器学习、流处理，以及提供于其他计算系统和存储系统进行集成的能力等。本章介绍了Spark所提供的大部分功能，主要包括以下内容: 
 
-- 使用Spark-submit运行生产应用程序
-- Dataset：用于结构化数据的类型安全API
+- 使用Spark-submit运行应用程序
+- Dataset：类型安全的结构化数据API
 - 结构化流处理
 - 机器学习与高级分析
-- 弹性数据集(RDD)：Spark的低级API
+- 弹性分布式数据集(RDD)：Spark的低级API
 - SparkR
-- 第三方生态系统
+- 第三方软件包生态系统
 
-## 3.1 生产程序运行
+## 3.1 运行生产应用程序
 
-使用Spark-submit将程序代码发送到集群并启动执行，提交后，应用程序将运行，直到它退出(完成任务)或遇到错误。可以使用Spark 的所有支持集群管理器，包括 standalone、Mesos和yarn。 
+Spark简化了开发和构建大数据处理程序的过程，Spark还可以通过内置的命令行工具spark-submit轻松地将测试级别的交互式程序转化为生产级别的应用程序。Spark-submit将应用程序代码发送到集群并启动执行，应用程序将一致运行，直到它退出(完成任务)或遇到错误。程序可以在Spark所有支持集群管理器(standalone、Mesos和yarn)下运行。 
 
-spark-submit提供了几个控制项，可以在其中指定应用程序需要的资源以及它应该如何运行以及它的
-命令行参数。 可以在Spark 的任何支持的语言中编写应用程序，然后提交它们执行。最简单的示例是在本地机器上运行应用程序。
+spark-submit提供了几个控制项，可以指定应用程序需要的资源，以及应用程序的运行方式和运行参数等。
+
+可以使用Spark支持的任何语言中编写应用程序，然后提交执行。最简单的示例是在本地机器上运行应用程序：
 
 ```sh
 ./bin/spark-submit \
@@ -29,6 +30,8 @@ spark-submit提供了几个控制项，可以在其中指定应用程序需要�
   --master local \
   ./examples/jars/spark-examples_2.11-2.2.0.jar 10
 ```
+
+--class指定要运行的JAR包和启动类
 
 运行Python：
 
@@ -38,17 +41,17 @@ spark-submit提供了几个控制项，可以在其中指定应用程序需要�
   ./examples/src/main/python/pi.py 10
 ```
 
-通过更改Spark-submit的master参数，可以将应用程序提交到Spark的standalone集群资源管理器、Mesos或Yarn的集群管理器。
+通过更改Spark-submit的master参数，可以将应用程序提交到Spark的standalone集群资源管理器、Mesos或Yarn。
 
-## 3.2 Datasets:用于结构化数据的类安全类型API
+## 3.2 Datasets：类型安全的结构化API
 
-Datesets是Spark的结构化数据的类安全类型API。Spark当前仅支持Java和Scala语言，不支持Python与R，因为它们是动态类型。
+Datesets是Spark结构化API的类型安全版本。用于在Java和Scala中编写静态类型的代码。Dataset API在Python和R中不可用，因为这些语言是动态类型的。
 
-上一章介绍的DataFrames，是类型行的对象，可以容纳不同类型的表格数据的分布式集合。Dataset API能够将Java/Scala类分配给DataFrame中的记录，并将其作为类型化对象的集合进行操作，类似于java的arrayList或Scala Seq。Datasets api是类型安全的，不能将与Datasets最初数据类型不同的类放入。这使得DataSets适用于编写大型应用，负责不同模块的开发人员必须定义好接口之间的交互。
+前一章节好的DataFrame是一个分布式的类型为Row的对象集合，它可以存储多种类型的表格数据。Dataset API让用户可以用Java/Scala类定义DataFrame中的每条记录，并将其作为类型对象的集合来操作，类似于Java ArrayList或Scala Seq。Dataset中可用API是类型安全的，这意味着Dataset中的对象不会被视为与出事定义的类不同的另一个类。这使得Dataset在编写大型应用程序时尤其有效。这样的话多个软件工程师可以通过协商好的接口进行交互。
 
-DataSet类的参数：`Dataset[T]` in Java and `Dataset[T]` in Scala。例如：`DataSet[Person]`将保证包含Person类的对象。从Spark 2.0开始，支持的类型是Java中遵循JavaBean模式的类和Scala中的case类。这些类型受到限制，因为Spark需要能够自动分析类型T并为数据集中的表格数据创建适当的模式。
+Dataset类通过内部包含的对象类型进行参数化，如Java中的`Dataset<T>`和Scala中的`Dataset[T]`将仅包含T类的对象。从类型需要Spark 2.0开始，受支持的类型遵循Jva的Bean模式，或是Scala的case类。之所以这些类型需要受到限制，是因为Spark要能够自动分析类型T，并未Dataset中的表格数据创建适当的模式。
 
-Dataset另一优点是：只有在需要或想要时才能使用它们。例如，在下面的示例中，将定义自己的数据类型，并通过任意映射和筛选函数对其进行操作。在完成操作之后，Spark可以自动地将它转换回数据帧，并且可以通过使用Spark包含的数百个函数来进一步操作它。这使得它很容易下降到较低的级别，在必要时执行类型安全；并向上抽象到更高的SQL以进行更快速的分析。下面是一个小示例，演示如何使用类型安全函数和类似数据帧的SQL表达式快速编写业务逻辑：
+Dataset另一优点是：只有在需要或想要时才能使用它们。例如，在下面的示例中，将定义自己的数据类型，并通过任意map和filter函数对其进行操作。在完成操作之后，Spark可以自动地将它转换为DataFrame，并且可以通过使用Spark包含的数百个函数来进一步操作它。这使得它很容易下降到较低的级别，在必要时执行类型安全编码；也可以升级到更高级的SQL进行更快速的分析。下面是一个小示例，演示如何使用类型安全函数和DataFrame类SQL表达式来快速编写业务逻辑：
 
 ```scala
 case class Flight(DEST_COUNTRY_NAME: String,
@@ -59,7 +62,7 @@ val flightsDF = spark.read
 val flights = flightsDF.as[Flight]
 ```
 
-最后一个优点是，当调用collect或接收Dataset时，它将在Dataset中转换适当类型的对象，而不是DataFrame行。这使得很容易获得类型安全性，并以分布式和本地方式安全地执行操作，而无需更改代码：
+最后一个优点是，当在Dataset上调用collect或take时，它将会手机Dataset中合适类型的对象，而不是DataFrame的Row对象。这样很容易地保证类型安全，并以分布式和本地方式安全地执行操作，而无需更改代码：
 
 ```scala
 flights
@@ -75,22 +78,20 @@ flights
 
 ## 3.3 Structured Streaming
 
-Structured Streaming是一种用于流处理的高级API，适用于Spark 2.2之后的版本。结构化流处理允许使用Spark的结构化API在批处理模式下的操作，并以流方式运行它们。这可以减少延迟并允许增量处理。
+Structured Streaming是用于流处理的高级API，适用于Spark 2.2之后的版本。可以像在批处理模式下一样，使用Spark的结构化API执行结构化流处理，并以流式方式运行它们，使用结构化流处理可以减少延迟并允许增量处理。最重要的是，它可以让你快速地从流式系统中提取有价值的信息，而几乎不需要更改代码。可以按照传统批处理作业的模式进行设计，然后将其转换为流式作业，即增量处理数据。
 
-结构化流处理最大的优点是：在不改变代码的情况下，快速地从流式数据系统中提取价值数据。以批处理作业作为原型，然后将其转换为流式作业。所有这些工作的方式都是通过增量处理这些数据。
-
-看一个简单的例子，说明开始使用结构化流是多么容易。将使用一个零售数据集，该数据集有特定的日期和时间供我们使用。将使用“按天”文件集，其中一个文件表示一天的数据。
+看一个简单的例子，说明开始使用结构化流是多么容易。将使用一个零售数据集(https://github.com/databricks/Spark-The-Definitive-Guide/tree/master/data/retail-data)，该数据集有特定的日期和时间供我们使用。将使用按天分组的文件，其中一个文件表示一天的数据。
 
 首先将它放在这种格式中，以模拟不同进程以一致和规则的方式生成的数据，并发送到一个位置，在那里使用Structured Streaming作业将读取这些数据。
 
-```
+```csv
 InvoiceNo,StockCode,Description,Quantity,InvoiceDate,UnitPrice,CustomerID,Country
 536365,85123A,WHITE HANGING HEART T-LIGHT HOLDER,6,2010-12-01 08:26:00,2.55,17...
 536365,71053,WHITE METAL LANTERN,6,2010-12-01 08:26:00,3.39,17850.0,United Kin...
 536365,84406B,CREAM CUPID HEARTS COAT HANGER,8,2010-12-01 08:26:00,2.75,17850...
 ```
 
-首先将数据作为静态Dataset进行分析，并创建一个DataFrame来执行此操作：
+首先按照静态数据集的处理方法来进行分析，并创建一个DataFrame来执行此操作，还将从这个静态数据集创建一个Schema模式。
 
 **Scala实现**
 
@@ -116,7 +117,7 @@ staticDataFrame.createOrReplaceTempView("retail_data")
 staticSchema = staticDataFrame.schema
 ```
 
-由于使用的是时间序列数据，因此应该如何分组和聚合数据。在本例中，将查看给定客户（CustomerId）进行大额购买的销售时间。例如，添加一个total cost列，看看客户在哪一天花费最多。
+由于使用的是时间序列数据，所以在此之前需要强调如何对数据进行分组和聚合操作。在本例中，将查看给定客户(CustomerId)进行大量采购的时间。例如，添加一个total cost列，看看客户花费最多的那个日期。
 
 `window()`函数理日期和时间戳的有用工具，包含聚合中每天的所有数据。是数据中时间序列的一个窗口。代码示例如下：
 
@@ -186,7 +187,7 @@ streamingDataFrame = spark.readStream\
     .load("/data/retail-data/by-day/*.csv")
 ```
 
-流式数据的批处理逻辑：
+对刘数据执行与之前对静态DataFrame一样的业务逻辑(按照时间窗口统计花费)，流式数据的批处理逻辑：
 
 **scala**
 
@@ -214,15 +215,17 @@ purchaseByCustomerPerHour = streamingDataFrame\
   .sum("total_cost")
 ```
 
-这仍然是一个惰性操作，因此需要调用流操作来开始执行此数据流。流式处理与批处理的action操作有所不同，因为流操作将在某处填充数据，而不是仅仅调用count之类的操作（这在流上无论如何都没有任何意义）。流式处理的行动操作将转换操作结果输出到内存中的表，每次触发更新该表。在这种情况下，每个触发器都基于一个单独的文件（设置的read选项）。Spark将对内存表中的数据进行更新，这样将始终拥有上一次聚合中指定的最高值：
+这仍然是一个惰性操作，因此需要调用流操作来开始执行此数据流。
+
+流式处理与批处理的action操作有所不同，因为首先要将流数据缓存到某个地方，而不是像对静态数据那样直接调用count函数(对流数据没有任何意义)。流数据将被缓存到一个内存上的数据表里。在每次被触发器触发后更新这个内存缓存。在这个例子中，之前设置的maxFilesPerTigger选项每次读完一个文件后都会被触发，Spark将基于新读入的文件更新内存数据表的内容，这样的话，聚合操作可以使用维护着历史数据中的最大值。
 
 **Scala**
 
 ```scala
 purchaseByCustomerPerHour.writeStream
-    .format("memory") // memory = store in-memory table
-    .queryName("customer_purchases") // the name of the in-memory table
-    .outputMode("complete") // complete = all the counts should be in the table
+    .format("memory") // memory代表将表存储内存
+    .queryName("customer_purchases") //存入内存的表名
+    .outputMode("complete") // complete表示保存表中所有记录
     .start()
 ```
 
@@ -237,7 +240,7 @@ purchaseByCustomerPerHour.writeStream\
     .start()
 ```
 
-当启动流处理时，可以对它运行查询，以调试如果将其写入生产接收器，结果将是什么样子：
+当启动流处理时，可以运行查询来调试计算结构，查看我们的计算结果是否已经被写入结果接收器。
 
 ```
 spark.sql("""
@@ -248,7 +251,7 @@ spark.sql("""
   .show(5)
 ```
 
-将处理结果输出到控制台：
+会注意到，输出表格的内容会随着读入更多的数据而发生实时变化。在处理完每个文件后，结果可能会根据 数据发生改变，也可能不会。因为要根据客户购买能力对客户进行分组。将处理结果输出到控制台：
 
 ```python
 purchaseByCustomerPerHour.writeStream
@@ -258,7 +261,7 @@ purchaseByCustomerPerHour.writeStream
     .start()
 ```
 
-不应该在生产中使用这两种流式数据处理方法。注意window()是建立在事件时间上的，而不是Spark处理数据的时间。这是结构化流已经解决的Spark流的缺点之一。
+不应该在生产中使用这两种流式数据处理方法。注意这个时间窗口是基于事件事件的，而不是Spark处理数据的时间，在新的结构化流处理解决这个问题以前，这个是Spark缺点之一。
 
 ## 3.3 机器学习与高级数据分析
 
@@ -385,9 +388,11 @@ kmModel.computeCost(transformedTest)
 
 ## 3.4 弹性数据集(RDD)：Spark的低级API
 
-Spark包含许多低级API，允许通过弹性分布式数据集(RDD)对任意Java和Python对象进行操作。实际上，Spark中的所有内容都构建在RDD之上。DataFrame操作构建在RDD之上，并向下编译到这些较低级别的工具，以方便和非常高效的分布式执行。有一些东西可以使用rdd，特别是在读取或操作原始数据时，但是在大多数情况下，您应该坚持使用结构化api。RDD的级别低于数据帧，因为它们向最终用户显示物理执行特性（如分区）。
+Spark包含许多低级API，允许通过弹性分布式数据集(RDD)对任意Java和Python对象进行操作。实际上，Spark中的所有内容都构建在RDD之上。DataFrame操作构建在RDD之上，并向下编译到这些较低级别的工具，以方便和非常高效的分布式执行。有时可能会使用RDD，特别是在读取或操作原始数据时，但是在大多数情况下，应该坚持使用结构化API。RDD的级别低于数据帧，因为它们向最终用户暴露物理执行特性(如分区)。
 
-rdd在Scala和Python中都有。用户不应该为了执行许多任务而大量使用RDD，除非维护的是旧的Spark代码。新版Spark中处理一些非常原始的未处理和非结构化数据之外，应该使用RDD而不是结构化api。
+可能会使用RDD来并行化已经存储在驱动器机器内存中的原始数据。例如：并行化一些简单数字并创建一个DataFrame。可以将RDD转换为DataFrame
+
+RDD在Scala和Python中都有。用户不应该为了执行许多任务而大量使用RDD，除非维护的是旧的Spark代码。新版Spark中处理一些非常原始的未处理和非结构化数据之外，应该使用RDD而不是结构化api。
 
 ## 3.5 Spark的生态系统和软件包
 
