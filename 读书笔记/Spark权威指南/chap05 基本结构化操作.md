@@ -554,7 +554,7 @@ SELECT *, 1 as One FROM dfTable LIMIT 2
 
 ### 5.4.4 Adding Columns
 
-还有一种更正式的方法，可以在DataFrame中添加新列，即使用DataFrame上的withColumn方法。
+使用withColum可以为DataFrame添加新列，这种方式更为规范一些，例如，添加一个仅包含数字1的列：
 
 **Scala**
 
@@ -574,9 +574,35 @@ df.withColumn("numberOne","sal"+1000)
 df.withColumn("numberOne",lit(1))
 ```
 
+**SQL**
+
+```sql
+select *, 1 as numberOne from dfTable Limit 2
+```
+
+在下一个示例中，当出发国家与目的国家相同时，将其设置为一个布尔标志：
+
+```scala
+// in scala
+df.withColumn("withinCountry", expr("DEST_COUNTRY_NAME" == "ORIGIN_COUNTRY_NAME")).show(2)
+```
+
+```python
+# in python
+df.withColumn("withCountry", expr("DEST_COUNTRY_NAME" == "ORIGIN_COUNTRY_NAME")).show(2)
+```
+
+注意：withColumn函数有两个参数：列名和给定行赋值的表达式，也可以使用withColumn对某一列重命名：
+
+```python
+df.withColumn("Destionation", expr("DEST_COUNTRY_NAME")).columns
+```
+
 ### 5.3.4 Renaming Columns
 
-```
+使用withColumnRenamed方法实现对列重命名，第一个参数是要被修改的列名，第二个参数是新的列名：
+
+```python
 df.withColumnRenamed("comm", "common").show()
 ```
 
@@ -616,7 +642,7 @@ SELECT This Long Column-Name, This Long Column-Name as new col FROM dfTableLong 
 df.drop("ORIGIN_COUNTRY_NAME","jDEST_COUNTRY_NAMEob").show()
 ```
 
-### 5.3.7 Changing a Column’s Type
+### 5.3.7 更改列的类型(强制类型转换)
 
 有时，可能需要从一种类型转换为另一种类型。
 
