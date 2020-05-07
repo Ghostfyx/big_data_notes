@@ -509,3 +509,237 @@ WHERE instr(Description, 'BLACK') >= 1 OR instr(Description, 'WHITE') >= 1
 +----------------------------------+
 ```
 
+## 6.4 处理日期和时间戳类型
+
+在程序语言和数据库领域中，处理日期和时间一直都是难题。需要一直跟踪时区，确保其格式正确可用。Spark通过显式地关注两种时间相关的信息来简化这个问题，分别是专门针对于日历日期的date，以及包括日期和时间信息的timestamp。正如从当前数据集中所看到的，Spark将尽最大努力正确识别列数据类型，例如：当设置inferSchema为true的时候，Spark可以自动推理出日期和时间戳数据类型。
+
+处理日期和时间戳类型与处理字符串类型密切相关，因为经常将时间戳或日期存储为字符串，并在运行时将它们转换为日期类型。虽然在使用数据库和结构化数据时，可能不需要字符类型的转换，但在处理文件和CSV文件时很常见。
+
+------
+
+在处理日期和时间戳时，尤其是在时区处理方面，有很多警告。 在2.1版及更高版本中，如果未在要解析的值中明确指定时区，则Spark将根据计算机的时区进行解析。 您可以根据需要通过在SQL配置中设置`spark.conf.sessionLocalTimeZone` 来设置会话本地时区。 应该根据Java TimeZone格式进行设置。
+
+```java
+df.printSchema()
+```
+
+```
+root
+|-- InvoiceNo: string (nullable = true)
+|-- StockCode: string (nullable = true)
+|-- Description: string (nullable = true)
+|-- Quantity: integer (nullable = true)
+|-- InvoiceDate: timestamp (nullable = true)
+|-- UnitPrice: double (nullable = true)
+|-- CustomerID: double (nullable = true)
+|-- Country: string (nullable = true)
+```
+
+------
+
+Spark对于某一时刻使用哪种格式有些特殊。 解析或转换时必须明确，以确保这样做没有问题。 目前为止，Spark正在使用Java日期和时间戳，因此需要确保符合这些标准。
+
+从简单基础开始，获取当前日期和时间戳
+
+```scala
+// in Scala
+import org.apache.spark.sql.functions.{current_date, current_timestamp}
+val dateDF = spark.range(10)
+.withColumn("today", current_date())
+.withColumn("now", current_timestamp())
+dateDF.createOrReplaceTempView("dateTable")
+```
+
+```python
+# in Python
+from pyspark.sql.functions import current_date, current_timestamp
+dateDF = spark.range(10)\
+.withColumn("today", current_date())\
+.withColumn("now", current_timestamp())
+dateDF.createOrReplaceTempView("dateTable")dateDF.printSchema()
+```
+
+```
+root
+|-- id: long (nullable = false)
+|-- today: date (nullable = false)
+|-- now: timestamp (nullable = false)
+```
+
+使用date_add与date_sub函数增减/减去天数，这些函数将读取一列：
+
+```scala
+// in Scala
+import org.apache.spark.sql.functions.{date_add, date_sub}
+dateDF.select(date_sub(col("today"), 5), date_add(col("today"), 5)).show(1)
+```
+
+```python
+# in Python
+from pyspark.sql.functions import date_add, date_sub
+dateDF.select(date_sub(col("today"), 5), date_add(col("today"), 5)).show(1)
+```
+
+```sql
+-- in SQL
+SELECT date_sub(today, 5), date_add(today, 5) FROM dateTable
+```
+
+```
++------------------+------------------+
+|date_sub(today, 5)|date_add(today, 5)|
++------------------+------------------+
+|    2017-06-12    |   2017-06-22     |
++------------------+------------------+
+```
+
+`datediff` 函数查看两个日期之间的差异，该函数将返回两个日期之间的天数；`months_between` 函数返回两个日期之间的月数：
+
+```scala
+// in Scala
+import org.apache.spark.sql.functions.{datediff, months_between, to_date}
+dateDF.withColumn("week_ago", date_sub(col("today"), 7))
+.select(datediff(col("week_ago"), col("today"))).show(1)
+dateDF.select(
+to_date(lit("2016-01-01")).alias("start"),
+to_date(lit("2017-05-22")).alias("end"))
+.select(months_between(col("start"), col("end"))).show(1)
+```
+
+```python
+# in Python
+from pyspark.sql.functions import datediff, months_between, to_date
+dateDF.withColumn("week_ago", date_sub(col("today"), 7)).select(datediff(col("week_ago"), col("today"))).show(1)
+
+dateDF.select(to_date(lit("2016-01-01")).alias("start"),to_date(lit("2017-05-22")).alias("end")).select(months_between(col("start"), col("end"))).show(1)
+```
+
+```sql
+-- in SQL
+SELECT to_date('2016-01-01'), months_between('2016-01-01', '2017-01-01'),
+datediff('2016-01-01', '2017-01-01')
+FROM dateTable
+```
+
+```
++-------------------------+
+|datediff(week_ago, today)|
++-------------------------+
+|          -7             |
++-------------------------+
++--------------------------+
+|months_between(start, end)|
++--------------------------+
+|         -16.67741935     |
++--------------------------+
+```
+
+`to_date`函数以指定格式将字符串转换为日期数据，需要在Java SimpleDateFormat中指定想要的格式：
+
+```scala
+// in Scala
+import org.apache.spark.sql.functions.{to_date, lit}
+spark.range(5).withColumn("date", lit("2017-01-01"))
+.select(to_date(col("date"))).show(1)
+```
+
+```python
+# in Python
+from pyspark.sql.functions import to_date, lit
+spark.range(5).withColumn("date", lit("2017-01-01"))\
+.select(to_date(col("date"))).show(1)
+```
+
+如果Spark无法解析日期，它不会抛出错误，而是返回null，在大规模流水线操作时，如果想获取某种格式的数据，再将其转换成另一种格式，这可能有点麻烦。为了解释这点，看下从year-month-day转换为year-day-month的日期格式。 Spark将无法解析此日期，而是默认返回null：
+
+```
+dateDF.select(to_date(lit("2016-20-12")),to_date(lit("2017-12-11"))).show(1)
++-------------------+-------------------+
+|to_date(2016-20-12)|to_date(2017-12-11)|
++-------------------+-------------------+
+|        null       |      2017-12-11   |
++-------------------+-------------------+
+```
+
+将使用两个函数来解决此问题：`to_date` 和 `to_timestamp`。前者可以选择一种格式，而后者强制要求一种格式：
+
+```scala
+// in Scala
+import org.apache.spark.sql.functions.to_date
+val dateFormat = "yyyy-dd-MM"
+val cleanDateDF = spark.range(1).select(
+to_date(lit("2017-12-11"), dateFormat).alias("date"),
+to_date(lit("2017-20-12"), dateFormat).alias("date2"))
+cleanDateDF.createOrReplaceTempView("dateTable2")
+```
+
+```python
+# in Python
+from pyspark.sql.functions import to_date
+dateFormat = "yyyy-dd-MM"
+cleanDateDF = spark.range(1).select(
+to_date(lit("2017-12-11"), dateFormat).alias("date"),
+to_date(lit("2017-20-12"), dateFormat).alias("date2"))
+cleanDateDF.createOrReplaceTempView("dateTable2")
+```
+
+```sql
+-- in SQL
+SELECT to_date(date, 'yyyy-dd-MM'), to_date(date2, 'yyyy-dd-MM'), to_date(date)
+FROM dateTable2
+```
+
+```
++----------+----------+
+|    date  | date2    |
++----------+----------+
+|2017-11-12|2017-12-20|
++----------+----------+
+```
+
+`to_timestamp` 的示例，该示例始终需要指定一种格式：
+
+```scala
+// in Scala
+import org.apache.spark.sql.functions.to_timestamp
+cleanDateDF.select(to_timestamp(col("date"), dateFormat)).show()
+```
+
+```python
+# in Python
+from pyspark.sql.functions import to_timestamp
+cleanDateDF.select(to_timestamp(col("date"), dateFormat)).show()
+```
+
+```sql
+-- in SQL
+SELECT to_timestamp(date, 'yyyy-dd-MM'), to_timestamp(date2, 'yyyy-dd-MM')
+FROM dateTable2
+```
+
+```
++----------------------------------+
+|to_timestamp(`date`, 'yyyy-dd-MM')|
++----------------------------------+
+|        2017-11-12 00:00:00       |
++----------------------------------+
+```
+
+日期和时间戳的转换在所有语言中都很简单，在SQL中，可以按以下方式实现：
+
+```sql
+SELECT cast(to_date("2017-01-01", "yyyy-dd-MM") as timestamp)
+```
+
+在以正确的格式和类型获取了日期和时间戳之后，它们之间的比较实际很简单，只需要保证使用同一种日期/时间戳类型格式，或者根据yyyy-MM-dd这种正确格式来指定字符串：
+
+```
+cleanDateDF.filter(col("date2") > lit("2017-12-12")).show()
+```
+
+还可以将其设置为字符串，Spark将其解析为文字：
+
+```
+cleanDateDF.filter(col("date2") > "'2017-12-12'").show()
+```
+
