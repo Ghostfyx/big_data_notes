@@ -34,7 +34,7 @@ client不是运行和程序执行时的一部分，被用来准备和发送dataf
 
 通过调整task slot的数量，用户可以定义子任务如何相互隔离。对于TaskManager，具有一个slot，意味着每个任务组都在单独的JVM中运行(例如，可以在单独的容器中启动)；具有多个slot意味着多个sub task共享同一JVM，同一JVM中的任务共享TCP连接(通过多路复用)和心跳消息。 还可以共享数据集和数据结构，从而减少每个任务的开销。
 
-![](../img/tasks_slots.svg)
+![](../../img/tasks_slots.svg)
 
 默认情况下，Flink允许不同任务中的子任务共享同一slot，只要他们是同一Job即可。结果是一个slot可以容纳整个作业管道。 允许slot共享有两个主要好处：
 

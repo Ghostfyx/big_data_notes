@@ -1,100 +1,300 @@
-# ClientProtocolProvider 源码分析
+# MapReduce ClientProtocol源码分析
 
-## 1. ClientProtocolProvider概述
+## 1. ClientProtocol UML图
 
-ClientProtocolProvider客户端通信协议提供者的抽象类，在MapReduce中，ClientProtocolProvider抽象类的实现共有YarnClientProtocolProvider、LocalClientProtocolProvider两种，前者为Yarn模式，而后者为Local模式。
+![](../img/clientProtocol_uml.jpg)
 
-## 2. ClientProtocolProvider方法列表
+## 2. ClientProtocol概述
 
-- ```java
-	public abstract ClientProtocol create(Configuration conf) throws IOException;
-	```
+clientProtocol是客户端与集群的通信协议。JobClient可以使用clientProtocol中的方法来提交Job，获取作业的运行状态。
 
-- ```java
-	public abstract ClientProtocol create(InetSocketAddress addr,
-	    Configuration conf) throws IOException;
-	```
+## 3. ClientProtocol版本迭代
 
-- ```java
-	public abstract void close(ClientProtocol clientProtocol) throws IOException;
-	```
-
-## 3. 抽象类实现
-
-### 3.1 YarnClientProtocolProvider
-
-YARN模式下，由YarnClientProtocolProvider创建提交器YARNRunner。
+每当更新ClientProtocol类时，就会对类内维护的版本号属性+1，当前版本号是37；
 
 ```java
-public class YarnClientProtocolProvider extends ClientProtocolProvider {
+  public static final long versionID = 37L;
+```
 
-  @Override
-  public ClientProtocol create(Configuration conf) throws IOException {
-    // 获取Job配置的mapreduce.framework.name与MR的YARN_FRAMEWORK_NAME对比
-    if (MRConfig.YARN_FRAMEWORK_NAME.equals(conf.get(MRConfig.FRAMEWORK_NAME))) {
-      return new YARNRunner(conf);
-    }
-    return null;
-  }
+| 版本号 | 版本变化概述                                                 |
+| ------ | ------------------------------------------------------------ |
+| 2      | 修改`getTaskCompletionEvents`方法                            |
+| 4      | 新增`killTask(String,boolean)`方法                           |
+| 5      | 使用max_map_tasks和max_reduce_tasks替换集群max_tasks属性     |
+| 6      | change the counters representation for HADOOP-2248           |
+| 7      | 新增getAllJobs                                               |
+| 8      | 更改{job\|task} id以使用相应的对象而不是字符串。             |
+| 9      | change the counter representation for HADOOP-1915            |
+| 10     | 新增getSystemDir                                             |
+| 11     | 更改JobProfile以包括队列名称                                 |
+| 12     | 为JobStatus新增getCleanupTaskReports和cleanupProgress        |
+| 13     | 新增getJobQueueInfos、getJobQueueInfo(queue name) 和getAllJobs(queue) |
+| ...    | .......                                                      |
+| 36     | 为mapreduce计算框架新增getJobTrackerStatus()方法             |
+| 37     | 框架计数器更有效的序列化方法                                 |
+| 38     | 新增getLogFilePath(JobID, TaskAttemptID)                     |
 
-  // 新版本底层调用的是create(conf);方法，InetSocketAddress没有用
-  @Override
-  public ClientProtocol create(InetSocketAddress addr, Configuration conf)
-      throws IOException {
-    return create(conf);
-  }
+## 4. ClientProtocol 接口方法
 
-  @Override
-  public void close(ClientProtocol clientProtocol) throws IOException {
-    if (clientProtocol instanceof YARNRunner) {
-      ((YARNRunner)clientProtocol).close();
-    }
-  }
+ClientProtocol是一个接口，其方法描述了客户端对job的操作、与集群的通信以及job运行时状态信息获取的相关方法。下面对主要方法列举和说明：
+
+```java
+@KerberosInfo(
+    serverPrincipal = JTConfig.JT_USER_NAME)
+@TokenInfo(DelegationTokenSelector.class)
+@InterfaceAudience.Private
+@InterfaceStability.Stable
+public interface ClientProtocol extends VersionedProtocol {
+     public static final long versionID = 37L;
+
+  /**
+   * 为作业分配唯一名称.
+   * @return a unique job name for submitting jobs.
+   * @throws IOException
+   */
+  public JobID getNewJobID() throws IOException, InterruptedException;
+
+  /**
+   * Submit a Job for execution.  Returns the latest profile for
+   * that job.
+   */
+  public JobStatus submitJob(JobID jobId, String jobSubmitDir, Credentials ts)
+      throws IOException, InterruptedException;
+
+  /**
+   * Get the current status of the cluster
+   * 
+   * @return summary of the state of the cluster
+   */
+  public ClusterMetrics getClusterMetrics() 
+  throws IOException, InterruptedException;
+
+  /**
+   * Get the JobTracker's status.
+   * 
+   * @return {@link JobTrackerStatus} of the JobTracker
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  public JobTrackerStatus getJobTrackerStatus() throws IOException,
+    InterruptedException;
+
+  public long getTaskTrackerExpiryInterval() throws IOException,
+                                               InterruptedException;
+  
+  /**
+   * Get the administrators of the given job-queue.
+   * This method is for hadoop internal use only.
+   * @param queueName
+   * @return Queue administrators ACL for the queue to which job is
+   *         submitted to
+   * @throws IOException
+   */
+  public AccessControlList getQueueAdmins(String queueName) throws IOException;
+
+  /**
+   * Kill the indicated job
+   */
+  public void killJob(JobID jobid) throws IOException, InterruptedException;
+
+  /**
+   * Set the priority of the specified job
+   * @param jobid ID of the job
+   * @param priority Priority to be set for the job
+   */
+  public void setJobPriority(JobID jobid, String priority) 
+  throws IOException, InterruptedException;
+  
+  /**
+   * Kill indicated task attempt.
+   * @param taskId the id of the task to kill.
+   * @param shouldFail if true the task is failed and added to failed tasks list, otherwise
+   * it is just killed, w/o affecting job failure status.  
+   */ 
+  public boolean killTask(TaskAttemptID taskId, boolean shouldFail) 
+  throws IOException, InterruptedException;
+  
+  /**
+   * Grab a handle to a job that is already known to the JobTracker.
+   * @return Status of the job, or null if not found.
+   */
+  public JobStatus getJobStatus(JobID jobid) 
+  throws IOException, InterruptedException;
+
+  /**
+   * Grab the current job counters
+   */
+  public Counters getJobCounters(JobID jobid) 
+  throws IOException, InterruptedException;
+    
+  /**
+   * Grab a bunch of info on the tasks that make up the job
+   */
+  public TaskReport[] getTaskReports(JobID jobid, TaskType type)
+  throws IOException, InterruptedException;
+
+  /**
+   * A MapReduce system always operates on a single filesystem.  This 
+   * function returns the fs name.  ('local' if the localfs; 'addr:port' 
+   * if dfs).  The client can then copy files into the right locations 
+   * prior to submitting the job.
+   */
+  public String getFilesystemName() throws IOException, InterruptedException;
+
+  /** 
+   * Get all the jobs submitted. 
+   * @return array of JobStatus for the submitted jobs
+   */
+  public JobStatus[] getAllJobs() throws IOException, InterruptedException;
+  
+  /**
+   * Get task completion events for the jobid, starting from fromEventId. 
+   * Returns empty array if no events are available. 
+   * @param jobid job id 
+   * @param fromEventId event id to start from.
+   * @param maxEvents the max number of events we want to look at 
+   * @return array of task completion events. 
+   * @throws IOException
+   */
+  public TaskCompletionEvent[] getTaskCompletionEvents(JobID jobid,
+    int fromEventId, int maxEvents) throws IOException, InterruptedException;
+    
+  /**
+   * Get the diagnostics for a given task in a given job
+   * 获取给定任务的诊断信息
+   * @param taskId the id of the task
+   * @return an array of the diagnostic messages
+   */
+  public String[] getTaskDiagnostics(TaskAttemptID taskId) 
+  throws IOException, InterruptedException;
+
+  /** 
+   * Get all active trackers in cluster. 
+   * @return array of TaskTrackerInfo
+   */
+  public TaskTrackerInfo[] getActiveTrackers() 
+  throws IOException, InterruptedException;
+
+  /** 
+   * Get all blacklisted trackers in cluster. 
+   * @return array of TaskTrackerInfo
+   */
+  public TaskTrackerInfo[] getBlacklistedTrackers() 
+  throws IOException, InterruptedException;
+
+  /**
+   * Grab the jobtracker system directory path 
+   * where job-specific files are to be placed.
+   * 
+   * 获取放置作业文件的系统目录
+   * @return the system directory where job-specific files are to be placed.
+   */
+  public String getSystemDir() throws IOException, InterruptedException;
+  
+  /**
+   * Get a hint from the JobTracker 
+   * where job-specific files are to be placed.
+   * 
+   * @return the directory where job-specific files are to be placed.
+   */
+  public String getStagingAreaDir() throws IOException, InterruptedException;
+
+  /**
+   * Gets the directory location of the completed job history files.
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  public String getJobHistoryDir() 
+  throws IOException, InterruptedException;
+
+  /**
+   * Gets set of Queues associated with the Job Tracker
+   * 
+   * @return Array of the Queue Information Object
+   * @throws IOException 
+   */
+  public QueueInfo[] getQueues() throws IOException, InterruptedException;
+  
+  /**
+   * Gets scheduling information associated with the particular Job queue
+   * 
+   * @param queueName Queue Name
+   * @return Scheduling Information of the Queue
+   * @throws IOException 
+   */
+  public QueueInfo getQueue(String queueName) 
+  throws IOException, InterruptedException;
+  
+  /**
+   * Gets the Queue ACLs for current user
+   * @return array of QueueAclsInfo object for current user.
+   * @throws IOException
+   */
+  public QueueAclsInfo[] getQueueAclsForCurrentUser() 
+  throws IOException, InterruptedException;
+  
+  /**
+   * Gets the root level queues.
+   * @return array of JobQueueInfo object.
+   * @throws IOException
+   */
+  public QueueInfo[] getRootQueues() throws IOException, InterruptedException;
+  
+  /**
+   * Returns immediate children of queueName.
+   * @param queueName
+   * @return array of JobQueueInfo which are children of queueName
+   * @throws IOException
+   */
+  public QueueInfo[] getChildQueues(String queueName) 
+  throws IOException, InterruptedException;
+
+  /**
+   * Get a new delegation token.获取新的委托令牌
+   * @param renewer the user other than the creator (if any) that can renew the 
+   *        token
+   * @return the new delegation token
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  public 
+  Token<DelegationTokenIdentifier> getDelegationToken(Text renewer
+                                                      ) throws IOException,
+                                                          InterruptedException;
+  
+  /**
+   * Renew an existing delegation token
+   * @param token the token to renew
+   * @return the new expiration time
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  public long renewDelegationToken(Token<DelegationTokenIdentifier> token
+                                   ) throws IOException,
+                                            InterruptedException;
+  
+  /**
+   * Cancel a delegation token.
+   * @param token the token to cancel
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  public void cancelDelegationToken(Token<DelegationTokenIdentifier> token
+                                    ) throws IOException,
+                                             InterruptedException;
+  
+  /**
+   * Gets the location of the log file for a job if no taskAttemptId is
+   * specified, otherwise gets the log location for the taskAttemptId.
+   * @param jobID the jobId.
+   * @param taskAttemptID the taskAttemptId.
+   * @return log params.
+   * @throws IOException
+   * @throws InterruptedException
+   */
+  public LogParams getLogFileParams(JobID jobID, TaskAttemptID taskAttemptID)
+      throws IOException, InterruptedException;
+    
 }
 ```
 
-### 3.2 LocalClientProtocolProvider
-
-用户本地/单机启动，通过`LocalClientProtocolProvider`创建作业提交器`LocalJobRunner`。
-
-Local模式也是需要看参数mapreduce.framework.name的配置是否为local，是的话，返回LocalJobRunner实例，并设置map任务数量为1，否则返回null，值得一提的是，这里参数mapreduce.framework.name未配置的话，默认为local，也就是说，MapReduce需要看参数`mapreduce.framework.name`确定连接模式，但默认是Local模式的。
-
-```java
-public class LocalClientProtocolProvider extends ClientProtocolProvider {
-
-  @Override
-  public ClientProtocol create(Configuration conf) throws IOException {
-     // conf.get(String propertyName, String defaultValue)
-      // 初始化framework：取参数mapreduce.framework.name，参数未配置默认为local
-      String framework =
-        conf.get(MRConfig.FRAMEWORK_NAME, MRConfig.LOCAL_FRAMEWORK_NAME);
-    if (!MRConfig.LOCAL_FRAMEWORK_NAME.equals(framework)) {
-      return null;
-    }
-    // 本地模式仅会开启一个map任务
-    conf.setInt(JobContext.NUM_MAPS, 1);
-    // 返回本地提交器  
-    return new LocalJobRunner(conf);
-  }
-
-  @Override
-  public ClientProtocol create(InetSocketAddress addr, Configuration conf) {
-    return null; // LocalJobRunner doesn't use a socket
-  }
-
-  @Override
-  public void close(ClientProtocol clientProtocol) {
-    // no clean up required
-  }
-
-}
-```
-
-## 4. SPI动态加载
-
-在Cluster类中，Cluster中客户端通信协议ClientProtocol实例，**要么是Yarn模式下的YARNRunner，要么就是Local模式下的LocalJobRunner**。使用`ServiceLoader.load(ClientProtocolProvider.class);`动态加载ClientProtocolProvider实现类：YarnClientProtocolProvider和LocalClientProtocolProvider。
-
-接口全限定名命名的文件位置：
-
-- YarnClientProtocolProvider位于hadoop-mapreduce-client-jobclient模块下的META-INF/services/目录中；
-- LocalClientProtocolProvider位于hadoop-mapreduce-client-common模块下的META-INF/services/目录中；

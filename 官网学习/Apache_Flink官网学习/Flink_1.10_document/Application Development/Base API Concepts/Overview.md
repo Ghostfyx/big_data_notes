@@ -1,6 +1,6 @@
 # Basic API Concepts
 
-Flink程序是常规程序，可对分布式集合进行转换操作(例如：过滤，映射，更新状态，联接，分组，定义窗口，聚合)。 集合是根据来源创建的(例如，通过读取文件，kafka主题或本地的内存中集合)。结果通过接收器返回，接收器可以例如将数据写入（分布式）文件或标准输出（例如，命令行终端）。 Flink程序可在各种上下文中运行，独立运行或嵌入其他程序中。 执行脚本可以在本地JVM或许多计算机的群集中进行。
+Flink程序是常规程序，可对分布式集合进行转换操作(例如：过滤，映射，更新状态，联接，分组，定义窗口，聚合)。 集合是根据来源创建的(例如，通过读取文件，kafka主题或本地的内存中集合)。结果通过接收器返回，接收器可以例如将数据写入(分布式)文件或标准输出(例如，命令行终端)。 Flink程序可在各种上下文中运行，独立运行或嵌入其他程序中。 执行脚本可以在本地JVM或许多计算机的群集中进行。
 
 根据数据源的类型(即有界或无界源)，您将编写批处理程序或流式程序，其中将DataSet API用于批处理，将DataStream API用于流式处理。 本指南将介绍两个API共有的基本概念，
 
@@ -115,3 +115,76 @@ DataStream<...> windowed = input
   .window(/*window specification*/);
 ```
 
+Flink的数据模型不是基于键值对。 因此，您无需将数据集类型实际打包到键和值中。 key是“虚拟的”：定义为对实际数据指导分组操作的功能。
+
+### 4.1 定义Tuples的Key
+
+最简单的情况是在Tuple的一个或多个字段上对元组进行分组：
+
+```java
+DataStream<Tuple3<Integer,String,Long>> input = // [...]
+KeyedStream<Tuple3<Integer,String,Long>,Tuple> keyed = input.keyBy(0) //元组根据第一个属性分组
+```
+
+```java
+DataStream<Tuple3<Integer,String,Long>> input = // [...]
+KeyedStream<Tuple3<Integer,String,Long>,Tuple> keyed = input.keyBy(0,1) //第一和第二个属性的复合键中的元组。
+```
+
+```java
+DataStream<Tuple3<Tuple2<Integer, Float>,String,Long>> ds;
+```
+
+指定keyBy(0)将导致系统使用完整的Tuple2作为键（以Integer和Float为键）。 如果要定位到嵌套的Tuple2中，则必须使用字段表达式键，下面对此进行了说明。
+
+### 4.2 Define keys using Field Expressions
+
+可以使用基于字符串的字段表达式来引用嵌套字段，并定义用于分组，排序，联接或联合分组的键。
+
+字段表达式使选择(嵌套)复合类型(例如Tuple和POJO类型)中的字段变得非常容易。
+
+```java
+// some ordinary POJO (Plain old Java Object)
+public class WC {
+  public String word;
+  public int count;
+}
+DataStream<WC> words = // [...]
+DataStream<WC> wordCounts = words.keyBy("word").window(/*window specification*/);
+```
+
+**Field Expression语法**
+
+- 通过字段名选择POJO字段
+- 通过字段名或从0开始频移的索引选择Tuple的字段
+- Pojo或元组的嵌套字段，例如，“ user.zip”是指存储在POJO类型的“ user”字段中的POJO的“ zip”字段。 支持POJO和元组的任意嵌套和混合，例如“ f1.user.zip”或“ user.f3.1.zip”。
+- 可以使用“ *”通配符表达式选择全部类型。 这对于非Tuple或POJO类型的类型也适用。
+
+**Field Expression示例**
+
+```java
+public static class WC {
+  public ComplexNestedClass complex; //nested POJO
+  private int count;
+  // getter / setter for private field (count)
+  public int getCount() {
+    return count;
+  }
+  public void setCount(int c) {
+    this.count = c;
+  }
+}
+public static class ComplexNestedClass {
+  public Integer someNumber;
+  public float someFloat;
+  public Tuple3<Long, Long, String> word;
+  public IntWritable hadoopCitizen;
+}
+```
+
+可以选择：
+
+- count
+- complex
+- complex.word.f2
+- complex.hadoopCitizen

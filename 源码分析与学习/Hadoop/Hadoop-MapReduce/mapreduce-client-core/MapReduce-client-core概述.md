@@ -354,15 +354,4 @@ src
 
 mapreduce目录包含开发MapReduce程序所需要的mr客户端类源码。
 
-## 4. client-core模块源码分析时间序列
-
-重点对其中的类进行分析。从Driver驱动器程序配置Job，到提交Job，读取输入数据，执行数据处理，输出数据整个流程串行对源码分析。后续可以根据下表循序渐进分析源码
-
-| 类名                                                        | 所属模块                          | 剖析日期   |
-| ----------------------------------------------------------- | --------------------------------- | ---------- |
-| org.apache.hadoop.mapreduce.Job                             | hadoop-mapreduce-client-core      | 2020/04/26 |
-| org.apache.hadoop.mapreduce.JobSubmitter                    | hadoop-mapreduce-client-core      | 2020/04/27 |
-| org.apache.hadoop.mapreduce.Cluster                         | hadoop-mapreduce-client-core      | 2020/04/28 |
-| org.apache.hadoop.mapreduce.protocol.ClientProtocolProvider | hadoop-mapreduce-client-core      | 2020/04/28 |
-| org.apache.hadoop.mapred.YARNRunner                         | hadoop-mapreduce-client-jobclient | 2020/04/29 |
 

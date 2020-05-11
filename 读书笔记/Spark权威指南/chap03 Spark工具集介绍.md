@@ -179,15 +179,15 @@ val streamingDataFrame = spark.readStream
 **Python**
 
 ```python
-streamingDataFrame = spark.readStream\
-    .schema(staticSchema)\
-    .option("maxFilesPerTrigger", 1)\
-    .format("csv")\
-    .option("header", "true")\
+streamingDataFrame = spark.readStream
+    .schema(staticSchema)
+    .option("maxFilesPerTrigger", 1)
+    .format("csv")
+    .option("header", "true")
     .load("/data/retail-data/by-day/*.csv")
 ```
 
-对刘数据执行与之前对静态DataFrame一样的业务逻辑(按照时间窗口统计花费)，流式数据的批处理逻辑：
+对流数据执行与之前对静态DataFrame一样的业务逻辑(按照时间窗口统计花费)，流式数据的批处理逻辑：
 
 **scala**
 
@@ -271,7 +271,7 @@ Spark的另一个流行方面是它能够使用一个内置的机器学习算法
 
 𝘬-Means是一种聚类算法，其中K个中心在数据中随机分配。然后将最接近该点的点“指定”给类，并计算指定点的中心。这个中心点叫做质心。然后，标记离质心最近的点为该质心的类，并将质心移到该点簇的新中心。在有限的迭代集重复这个过程，或者直到收敛（中心点停止改变）。
 
-MLlib中的机器学习算法要求将数据表示为数值。当前的数据由各种不同的类型表示，包括时间戳、整数和字符串。因此需要把这些数据转换成一些数值表示。在本例中，将使用几个DataFrames transofrmtin来操作日期数据：
+MLlib中的机器学习算法要求将数据表示为数值。当前的数据由各种不同的类型表示，包括时间戳、整数和字符串。因此需要把这些数据转换成一些数值表示。在本例中，将使用几个DataFrames transofrmtion来操作日期数据：
 
 ```python
 staticDataFrame.printSchema()
