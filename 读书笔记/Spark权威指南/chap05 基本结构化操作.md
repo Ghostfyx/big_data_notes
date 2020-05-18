@@ -868,7 +868,7 @@ df.repartition(5, col("DEST_COUNTRY_NAME")).coalesce(2)
 df.repartition(5, col("DEST_COUNTRY_NAME")).coalesce(2)
 ```
 
-### 5.3.15 Collecting Rows to the Driver 将行收集到驱动程序中
+### 5.3.15 驱动器获取行
 
 使用了几种不同的方法来进行操作，这些方法实际上都是相同的： collect从整个DataFrame中获取所有数据，take选择前N行，然后show很好地打印出多行。
 
