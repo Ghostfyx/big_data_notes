@@ -58,6 +58,76 @@ RDD是Spark提供的最基本的抽象，代表分布在集群中多台机器上
 
 ## 2.5 把数据集从集群上获取到客户端
 
-使用RDD的first()、take()等方法可以将数据返回到客户端。
+使用RDD的first()、take()、collect()等方法可以将数据返回到客户端。
 
-书中其余部分见此书代码。
+take()方法向客户端返回RDD的第一个元素，常用与对数据集做常规检查；collect()方法向客户端返回一个包含所有RDD内容的数组。take(n)方法向客户端返回指定数量的记录。
+
+```scala
+df.first()
+df.collect()
+df.take(n)
+```
+
+------
+
+**动作**
+
+创建RDD的操作并不会导致集群执行分布式计算。相反，RDD只是定义了作为计算过程中间步骤的逻辑数据集，只有调用RDD上的action(动作)时分布式计算才会执行。例如：count动作返回RDD中的记录个数：
+
+```scala
+rdd.count()
+```
+
+collect动作返回一个包含RDD中所有对象的Array(数组)：
+
+```
+rdd.collect()
+```
+
+动作不一定向本地进程返回结果，saveAsTextFile动作将RDD的内容保存到持久化存储(比如HDFS)上；
+
+```scala
+rdd.saveAsTextFile("hdfs://user/ds/mynumbers")
+```
+
+------
+
+scala声明函数使用def关键字，必须为函数的参数指定类型，但是没必要指定函数的返回类型，原因在于Scala编译器能根据方法计算逻辑推断函数返回类型：
+
+```scala
+  def isHeader(line:String) = line.contains("id_1")
+```
+
+Scala也支持显式的指定返回类型，特别是在函数体很长，代码复杂并且包含多个return语句的情况，这时候，Scala编译器不一定能推断出函数的返回类型，为了函数代码可读性更好，也可以指明函数的返回类型。
+
+```scala
+def isHeader2(line:String):Boolean = {
+    line.contains("id_1")
+  }
+```
+
+Scala的匿名函数有点类似于Python的Lambda函数，为了减少函数输入，比如在匿名函数的定义中，为了定义匿名函数并给参数指定名称，只输入了字符`x =>`，Scala也允许使用下划线(_)表示匿名函数的参数：
+
+```scala
+head.filter(x => !isHeader(x))
+head.filter(!isHeader(_))
+```
+
+## 2.6 把代码从客户端发送到集群
+
+之前执行的代码都左右在head数组中的数据上，这些数据都在客户端机器上。现在，我们打算在Spark里把刚写好的代码应用关联到记录数据集RDD rawblocks，该数据集在集群上的记录有几百万条。用于在过滤集群上的语法和本地机器上的语法一样。这正是Spark的强大之处。
+
+它意味着我们可以先从集群中采样得到小的数据集，在小数据集上开发和调试数据处理代码，等一切就绪后再把代码发送到集群上处理完整的数据集就可以了。
+
+## 2.7 从RDD到DataFrame
+
+我们遇到的大部分数据集都有着合理的结构，要么因为它本来就是如此，要么因为已经有人已经对数据做好了清洗和结构化，我们没必要对花费精力自己写一套代码解析，只要简单地调用现成的类库，并利用数据的结构，即可解析成所需的结构，Spark 1.3引入了一个这样的数据结构——DataFrame。
+
+DataFrame是一个建立在RDD之上的Spark抽象，专门为结构规整的数据集而设计，DataFrame的一条记录就是一行，每一行由若干个列组成，每一列的数据类型都有严格的定义，可以把DataFrame类型实例理解为Spark版本的关系数据库表。DataFrame这个名字可能会联想到R语言的data.frame对象，或者Python的pandas.DataFrame对象，但是Spark的DataFrame与它们有很大的不同，因为Spark的DataFrame对象代表一个分布式数据集，而不是所有数据都存储在同一台机器上的本地数据。
+
+要为记录关联数据集创建一个DataFrame，需要用到SparkSession对象，SparkSession是SparkContext对象的一个封装，可以通过SparkSession直接访问到SparkContext：
+
+```scala
+sparkSession.sparkContext()
+```
+
