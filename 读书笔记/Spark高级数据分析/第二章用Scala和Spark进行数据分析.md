@@ -223,4 +223,69 @@ Spark也可以用磁盘来缓存数据，存储级别MEMORY_AND_DISK和MEMORY_AN
 
 DataFrame封装的RDD由Row的实例组成，包括通过索引位置(从0开始计数)获取每个记录中值的访问方法，以允许通过名称查找给定类型的字段`getAs[T]`方法。
 
-注意：有两种方式引用DataFrame的列名：作为字面量引用，例如`groupBy("is_match")`；作为Column对象引用，
+注意：有两种方式引用DataFrame的列名：作为字面量引用，例如`groupBy("is_match")`；作为Column对象引用。
+
+## 2.9 DataFrame的统计信息
+
+使用DataFrame API的describ函数可以计算DataFrame列所有非空值的最小值，最大值，平均值和标准差。
+
+```scala
+val matchSummary = matches.describe()
+val missSummary = misses.describe()
+```
+
+```
++-------+------------------+-------------------+
+|summary|      cmp_fname_c1|       cmp_fname_c2|
++-------+------------------+-------------------+
+|  count|              2091|                128|
+|   mean|0.9970329792424678| 0.9955357142890625|
+| stddev|0.0397918952355391|0.05050762718972983|
+|    min|               0.0|        0.428571429|
+|    max|               1.0|                1.0|
++-------+------------------+-------------------+
+```
+
+## 2.10 DataFrame的转置和重塑
+
+为了转置概要统计信息，首先要做的是将matchSummary和missSummary这两个DataFrame类型实例从宽表转换为长表。宽表中行代表指标，列表示变量；长表中的每一行代表一个指标，一个变量。
+
+将宽表转换成长表，可以利用DataFrame的flatMap方法。
+
+## 2.11 DataFrame的连接和特征选择
+
+可以使用Spark SQL和DataFrame API来完成DataFrame之间的连接(内连接、左外连接、右外连接和全连接)。尽管DataFrame API有一个Join函数，但是使用Spark SQL来表示这些连接会更容易。
+
+好的特征有两个特点：第一，对于匹配的记录和不匹配的记录，该特征的值有明显不同；第二，对于数据集的任何记录对，该特征通常有存在值。
+
+## 2.12 为生产环境准备模型
+
+尽管我们可以把评分函数写成一个Spark SQL的查询，但是在很多情况下，我们希望能将评分规则和机器学习模型都部署到生产环境中，在那里没哟足够的时间运行Spark SQL来得到答案。对于这些情况，我们希望编写和测试的函数能够在Spark上运行，但是生产代码并不依赖于Spark JAR包，也不需要运行SparkSession来执行代码。
+
+为了剥离出模型中的Spark特定的组件，我们希望一种创建简单记录类型的方法，从而可以将DataFrame中的字段视作静态类型变量，而不用在Row中动态查找。Scala提供了一种便捷的语法来创建这些记录，称为case类，case类默认实现了Java类的基本方法，例如toString，equals和hashCode。
+
+为记录关联数据创建一个case类，其中字段名字和类型与DataFrame parsed中的列名和类型一一对应。其中使用了Scala内建的Option[T]类型来表示输入数据中字段的值是否为null，以免Scala客户端抛出NullPointerException异常。
+
+```scala
+case class MatchData(
+                      id_1: Int,
+                      id_2: Int,
+                      cmp_fname_c1: Option[Double],
+                      cmp_fname_c2: Option[Double],
+                      cmp_lname_c1: Option[Double],
+                      cmp_lname_c2: Option[Double],
+                      cmp_sex: Option[Int],
+                      cmp_bd: Option[Int],
+                      cmp_bm: Option[Int],
+                      cmp_by: Option[Int],
+                      cmp_plz: Option[Int],
+                      is_match: Boolean
+)
+```
+
+使用as[T]将parsed转换为Dataset[T]：
+
+```scala
+val matchData = parsed.as[MatchData]
+```
+
