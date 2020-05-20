@@ -188,3 +188,143 @@ public static class ComplexNestedClass {
 - complex
 - complex.word.f2
 - complex.hadoopCitizen
+
+### 4.3 Define keys using Key Selector Functions
+
+使用Key Selector方法定义键， 键选择器函数将单个元素作为输入，并返回该元素的键
+
+```java
+public class WC {public String word; public int count;}
+
+KeyedStream<WC> keyed = words
+  .keyBy(new KeySelector<WC, String>() {
+     public String getKey(WC wc) { return wc.word; }
+   });
+```
+
+## 5. Specifying Transformation Functions
+
+许多转换方法需要用户自定义方法，本节列出了不同的定义方法。
+
+### 5.1 Implementing an interface
+
+```java
+class MyMapFunction implements MapFunction<String, Integer> {
+  public Integer map(String value) { return Integer.parseInt(value); }
+};
+data.map(new MyMapFunction());
+```
+
+### 5.2 匿名内部类
+
+```java
+data.map(new MapFunction<String, Integer> () {
+  public Integer map(String value) { return Integer.parseInt(value); }
+});
+```
+
+### 5.3 Java8 Lambda表达式
+
+Flink支持Java8 Lanbda 表达式。
+
+```java
+data.filter(s -> s.startsWith("http://"));
+
+data.reduce((i1,i2) -> i1 + i2);
+```
+
+### 5.4 Rich functions
+
+所有需要用户定义函数的转换都可以作为rich  function的参数。可以将
+
+```java
+class MyMapFunction implements MapFunction<String, Integer> {
+  public Integer map(String value) { return Integer.parseInt(value); }
+};
+```
+
+替换为：
+
+```java
+class MyMapFunction extends RichMapFunction<String, Integer> {
+  public Integer map(String value) { return Integer.parseInt(value); }
+};
+```
+
+Rich function也可以被定义为内部类：
+
+```java
+data.map (new RichMapFunction<String, Integer>() {
+  public Integer map(String value) { return Integer.parseInt(value); }
+});
+```
+
+除了用户定义的功能(例如：map, reduce等)，rich function还提供了四个方法： `open`, `close`, `getRuntimeContext`, and `setRuntimeContext`。 这些对于参数化函数，创建和最终确定本地状态，访问广播变量，访问运行时信息(例如累加器和计数器) 以及迭代信息很有用。
+
+## 6. 支持的数据类型
+
+Flink对可以在DataSet或DataStream中的元素类型设置了一些限制。 原因是方便系统分析类型以确定有效的执行策略。
+
+支持以下7种不同的数据类型：
+
+1. **Java Tuples** and **Scala Case Classes**
+2. **Java POJOs**
+3. **Primitive Types**
+4. **Regular Classes**
+5. **Values**
+6. **Hadoop Writables**
+7. **Special Types**
+
+### 6.1 Tuples and Case Classes
+
+元组是复合类型，包含固定数量的各种类型的字段。 Java API提供了从Tuple1到Tuple25的类。 元组的每个字段可以是任意Flink类型，包括其他元组，从而导致嵌套元组。 可以使用字段名称tuple.f4或使用通用的getter方法tuple.getField（int position）直接访问元组的字段。 字段索引从0开始。请注意，这与Scala元组相反，但是与Java的常规索引更加一致。
+
+```java
+DataStream<Tuple2<String, Integer>> wordCounts = env.fromElements(
+    new Tuple2<String, Integer>("hello", 1),
+    new Tuple2<String, Integer>("world", 2));
+
+wordCounts.map(new MapFunction<Tuple2<String, Integer>, Integer>() {
+    @Override
+    public Integer map(Tuple2<String, Integer> value) throws Exception {
+        return value.f1;
+    }
+});
+
+wordCounts.keyBy(0); // also valid .keyBy("f0")
+```
+
+### 6.2 POJOS
+
+Java和scala类符合以下要求，则被Flink视为特殊的Pojo数据类型：
+
+- 必须是public类
+- 必须有公用的无参构造方法
+- 所有字段是公共的，或者可以通过getter和setter函数访问
+- 字段类型必须支持注册的序列化程序
+
+POJO通常用PojoTypeInfo表示，并用PojoSerializer序列化（使用Kryo作为可配置的备用）。 当POJO实际上是Avro类型（Avro特定记录）或作为“ Avro反射类型”产生时，例外。 在这种情况下，POJO由AvroTypeInfo表示，并通过AvroSerializer进行序列化。 如果需要，还可以注册自己的自定义序列化程序；有关更多信息，请参见序列化。
+
+```java
+public class WordWithCount {
+
+    public String word;
+    public int count;
+
+    public WordWithCount() {}
+
+    public WordWithCount(String word, int count) {
+        this.word = word;
+        this.count = count;
+    }
+}
+
+DataStream<WordWithCount> wordCounts = env.fromElements(
+    new WordWithCount("hello", 1),
+    new WordWithCount("world", 2));
+
+wordCounts.keyBy("word"); // key by field expression "word"
+```
+
+## 7. 累加器与计数器
+
