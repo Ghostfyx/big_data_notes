@@ -54,11 +54,11 @@ f即为输入函数，处理每个分区的数据，每个分区的数据以Iter
 
 分区划分对Shuffle类操作很关键，决定了父RDD与子RDD之间的依赖类型（窄依赖or宽依赖）。如果协同划分的话，父子RDD之间形成**一致性分区**安排，保证同一个Key被分配到同一个分区，即窄依赖。反之，则形成宽依赖。一致性分区指的是分区划分器产生分区计算前和后一致的分区安排。
 
-Spark默认提供两种分区划分器：哈希分区划分器（HashPartitioner）和范围划分器（RangePartitioner），且Partitioner值存在于$<K,V>$类型的RDD中！！
+Spark默认提供两种分区划分器：哈希分区划分器(HashPartitioner)和范围划分器(RangePartitioner)，且Partitioner值存在于$<K,V>$类型的RDD中！！
 
 ## 3.4 创建操作
 
-目前有两种类型的基础RDD：一种是并行集合（Paralleized Collections），接受一个已经存在的Scala集合，然后进行并行计算；另外一种是从外部存储创建RDD，外部存储可以是从文本文件或者HDFS中读取。这两种类型的RDD获取子RDD等一系列拓展，形成**“血统”**关系图。
+目前有两种类型的基础RDD：一种是并行集合(Paralleized Collections)，接受一个已经存在的Scala集合，然后进行并行计算；另外一种是从外部存储创建RDD，外部存储可以是从文本文件或者HDFS中读取。这两种类型的RDD获取子RDD等一系列拓展，形成**“血统”**关系图。
 
 ### 3.4.1 并行化集合创建操作
 
@@ -91,8 +91,8 @@ Spark默认提供两种分区划分器：哈希分区划分器（HashPartitioner
 
 - Scala
 
-  ```
-  
+  ```scala
+  val rdd1: RDD[Int] = sc.parallelize( List( 1,2,3,4,5), 2)
   ```
 
   ### 3.4.2 外部存储创建操作
@@ -324,13 +324,13 @@ Spark默认提供两种分区划分器：哈希分区划分器（HashPartitioner
 	res0: Array[Array[Int]] = Array(Array(1, 2, 3), Array(4, 5, 6), Array(7, 8, 9, 10))
 	```
 
-- Union(other: RDD[T]): RDD[T]——将两个RDD合并，返回两个RDD的并集，返回元素不去重。
+- Union(other: RDD[T]): RDD[T]——将两个RDD合并，返回两个RDD的并集，返回元素不去重，注意两个RDD中的元素数据结构必须完全一致。
 
-- intersection(other: RDD[T]): RDD[T]
+- intersection(other: RDD[T]): RDD[T]——计算两个RDD的交集
 
-- intersection(other: RDD[T], numPartitions: Int): RDD[T]
+- intersection(other: RDD[T], numPartitions: Int): RDD[T]——计算两个RDD的交集，并对结果重新分区
 
-- intersection(other: RDD[T], partitioner: Partitioner): RDD[T]
+- intersection(other: RDD[T], partitioner: Partitioner): RDD[T]]——计算两个RDD的交集，并对结果重新分区的分区器
 
 	intersection操作类似于SQL中的innerJoin操作，返回两个元素交集，返回结果去重；numPartitions指定分区数，Partitoner指定分区方式。
 
