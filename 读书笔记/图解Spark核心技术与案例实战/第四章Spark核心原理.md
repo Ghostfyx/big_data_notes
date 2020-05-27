@@ -20,29 +20,19 @@
 
 ### 4.1.1 Spark消息通信架构
 
-Spark中定义了通信框架接口，接口实现中调用Netty的具体方法（Spark 2.0版本之后）。在框架中以RpcEndPoint和RpcEndPointRef实现了Actor和ActorRef相关动作，RpcEndPointRef是RpcEndPoint的引用，它们关系如图4-2所示：
+Spark中定义了通信框架接口，接口实现中调用Netty的具体方法（Spark 2.0版本之后，之前使用的Akka）。在框架中以RpcEndPoint和RpcEndPointRef实现了Actor和ActorRef相关动作，其中RpcEndPointRef是RpcEndPoint的引用，它们关系如图4-2所示：
 
 ![](./img/4-2.jpg)
 
 ​																	**图4-2 Spark消息通讯类图**
 
-消息通讯框架使用工厂模式，实现了对Netty的结偶，能够根据需要引入其他消息通讯工具。Spark具体实现步骤如下：
+消息通讯框架使用工厂模式，这种设计方式实现了对Netty的结偶，能够根据需要引入其他消息通讯工具。通信框架参见图4-2左上脚的四个类，具体实现步骤：
 
-- 定义RpcEnvFactory与RpcEnv两个抽象类，类的描述如图4-3，4-4所示。RpcEnv定义了RPC通信框架启动、关闭和停止等抽象方法，RpcEnvFactory定义了创建抽象方法；
+1. 定义RpcEnv和RpcEnvFactory两个抽象类，在RpcEnv定义了RPC通信框架启动、停止和关闭等抽象方法，在RpcEnvFactory定义了创建抽象方法；
+2. 在NettyRpcEnv和NettyRpcEnvFactory类中使用Netty对继承的方法进行了实现，需要注意的是在NettyRpc中启动终端点方法`setupEndpoint`，这个方法会把RpcEndPoint和RpcEndPointRef相互以键值方式存放在线程安全的ConcurrentHashMap中；
+3. 在RpcEnv的Objec类中通过反射方式实现了创建RpcEnv的静态方法。
 
-	<img src="./img/4-3.jpg" style="zoom:60%;" />
-
-	​															**图4-3 RpcEnvFactory**
-
-	<img src="./img/4-4.jpg" style="zoom:50%;" />
-
-	​																	**图4-4 RpcEnv**
-
-- NettyRpcEnv和NettyRpcFactory使用Netty对继承方法进行了实现，NettyRpcEnv中的setupEndPoint方法将RpcEndpoint和RpcEndpointRef已键值对的方式存放在线程安全的ConcurrentHashMap中。
-
-- 在RpcEnv类中通过反射的方式实现了创建RpcEnv实例的静态方法。
-
-在各模块使用中，如Master、Worker等，会先使用RpcEnv的静态方法创建RpcEnv实例，然后实例化Master，由于Master继承于ThreadSafeRpcEndpoint，因此创建的Master实例是一个线程安全的终端点，接着调用RpcEnv的setupEndPoint方法，把Master的终端点和其对应的引用注册到RpcEnv中。在消息通信中，只要其他对象获取了Master终端点的引用，就可以与Master通信。
+在各模块使用中，如Master、Worker等，会先使用RpcEnv的静态方法创建RpcEnv实例，然后实例化Master，由于Master继承于ThreadSafeRpcEndpoint，创建的Master实例是一个线程安全的终端点，接着调用RpcEnv的setupEndPoint方法，把Master的终端点和其对应的引用注册到RpcEnv中。在消息通信中，只要其他对象获取了Master终端点的引用，就可以与Master通信。
 
 Master.scala类的startRpcEnvAndEndPoint方法启动消息通信框架代码如下：
 
@@ -59,7 +49,9 @@ Master.scala类的startRpcEnvAndEndPoint方法启动消息通信框架代码如�
       webUiPort: Int,
       conf: SparkConf): (RpcEnv, Int, Option[Int]) = {
     val securityMgr = new SecurityManager(conf)
+    // RpcEnv静态方法创建RpcEnv实例
     val rpcEnv = RpcEnv.create(SYSTEM_NAME, host, port, conf, securityMgr)
+    // 把Master的终端点和其对应的引用注册到RpcEnv中
     val masterEndpoint = rpcEnv.setupEndpoint(ENDPOINT_NAME,
       new Master(rpcEnv, rpcEnv.address, webUiPort, securityMgr, conf))
     val portsResponse = masterEndpoint.askSync[BoundPortsResponse](BoundPortsRequest)
@@ -70,6 +62,45 @@ Master.scala类的startRpcEnvAndEndPoint方法启动消息通信框架代码如�
 Spark运行过程中，Master、Driver、Worker以及Executor等模块之间由实践驱动消息的发送。下面以Standalone为例，分析Spark启动过程和Application运行过程中如何通信。
 
 ### 4.1.2 Spark启动消息通信
+
+Spark启动过程主要是进行Master和Worker之间的通信，其消息发送关系如图4-3所示。首先由Worker节点向Master节点发送注册消息，然后Master节点处理完毕后，返回注册成功或失效消息，如果注册成功，则Worker定时发送心跳消息给Master。
+
+<img src="img/4-3.jpg" style="zoom: 33%;" />
+
+ 其详细过程如下：
+
+**（1）**当Master启动后，随之启动各Worker，Worker启动时会创建通信环境RpcEnv和终端店EndPoint，并向Master发送注册Worker的消息RegisterWorker。
+
+由于Worker可能需要注册到多个Master(HA环境)中，在Worker的tryRegisterAllMaster方法中创建注册线程池RegisterMasterThreadPool，把需要申请注册的请求放在该线程池中，随后通过该线程池启动注册线程，在该注册过程中，获取Master终端点引用，接着调用registerMaster方法，根据Master的RpcEndPointRef的send方法发送注册RegisterWorker消息，Worker.tryRegisterAllMaster方法代码如下所示：
+
+```scala
+// A thread pool for registering with masters. Because registering with a master is a blocking
+  // action, this thread pool must be able to create "masterRpcAddresses.size" threads at the same
+  // time so that we can register with all masters.
+  private val registerMasterThreadPool = ThreadUtils.newDaemonCachedThreadPool(
+    "worker-register-master-threadpool",
+    masterRpcAddresses.length // Make sure we can register with all masters at the same time
+  )
+
+private def tryRegisterAllMasters(): Array[JFuture[_]] = {
+    masterRpcAddresses.map { masterAddress =>
+      registerMasterThreadPool.submit(new Runnable {
+        override def run(): Unit = {
+          try {
+            logInfo("Connecting to master " + masterAddress + "...")
+            val masterEndpoint = rpcEnv.setupEndpointRef(masterAddress, Master.ENDPOINT_NAME)
+            sendRegisterMessageToMaster(masterEndpoint)
+          } catch {
+            case ie: InterruptedException => // Cancelled
+            case NonFatal(e) => logWarning(s"Failed to connect to master $masterAddress", e)
+          }
+        }
+      })
+    }
+  }
+```
+
+
 
 ## 4.2 作业执行原理
 
