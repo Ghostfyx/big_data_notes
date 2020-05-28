@@ -49,7 +49,7 @@ managed keyed state 接口提供不同类型状态的访问接口，这些状态
 
 请牢记，这些状态对象仅用于与状态交互。状态本身不一定存储在内存中，还可能在磁盘或其他位置。 另外需要牢记的是从状态中获取的值取决于输入元素所代表的 key。 因此，在不同 key 上调用同一个接口，可能得到不同的值。
 
-你必须创建一个 `StateDescriptor`，才能得到对应的状态句柄。 这保存了状态名称（正如我们稍后将看到的，你可以创建多个状态，并且它们必须具有唯一的名称以便可以引用它们）， 状态所持有值的类型，并且可能包含用户指定的函数，例如`ReduceFunction`。 根据不同的状态类型，可以创建`ValueStateDescriptor`，`ListStateDescriptor`， `ReducingStateDescriptor`，`FoldingStateDescriptor` 或 `MapStateDescriptor`。
+**必须创建一个 `StateDescriptor`，才能得到对应的状态句柄**。 这保存了状态名称（正如我们稍后将看到的，你可以创建多个状态，并且它们必须具有唯一的名称以便可以引用它们）， 状态所持有值的类型，并且可能包含用户指定的函数，例如`ReduceFunction`。 根据不同的状态类型，可以创建`ValueStateDescriptor`，`ListStateDescriptor`， `ReducingStateDescriptor`，`FoldingStateDescriptor` 或 `MapStateDescriptor`。
 
 状态通过 `RuntimeContext` 进行访问，因此只能在 *rich functions* 中使用。请参阅[这里](https://ci.apache.org/projects/flink/flink-docs-release-1.10/zh/dev/api_concepts.html#rich-functions)获取相关信息， 但是我们很快也会看到一个例子。`RichFunction` 中 `RuntimeContext` 提供如下方法：
 
@@ -107,3 +107,66 @@ public class CountWindowAverage extends RichFlatMapFunction<Tuple2<Long, Long>, 
 ```
 
 这个例子实现了一个简单的计数窗口。 我们把元组的第一个元素当作 key（在示例中都 key 都是 “1”）。 该函数将出现的次数以及总和存储在 “ValueState” 中。 一旦出现次数达到 2，则将平均值发送到下游，并清除状态重新开始。 请注意，我们会为每个不同的 key（元组中第一个元素）保存一个单独的值。
+
+## 4. 状态有效期(TTL)
+
+任何类型的 keyed state 都可以有有效期(TTL)，如果配置了 TTL 且状态值已过期，则会尽最大可能清除对应的值，这会在后面详述。所有状态类型都支持单元素的 TTL。 这意味着列表元素和映射元素将独立到期。
+
+在使用状态 TTL 前，需要先构建一个`StateTtlConfig` 配置对象。 然后把配置传递到 state descriptor 中启用 TTL 功能：
+
+```java
+import org.apache.flink.api.common.state.StateTtlConfig;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.time.Time;
+
+StateTtlConfig ttlConfig = StateTtlConfig
+    .newBuilder(Time.seconds(1))
+    .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
+    .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
+    .build();
+    
+ValueStateDescriptor<String> stateDescriptor = new ValueStateDescriptor<>("text state", String.class);
+stateDescriptor.enableTimeToLive(ttlConfig);
+```
+
+TTL配置有以下几个选项，newBuilder的第一个参数表示数据的有效期，是必选项。
+
+TTL的更新策略(默认是OnCreateAndWrite)：
+
+- `StateTtlConfig.UpdateType.OnCreateAndWrite` - 仅在创建和写入时更新
+- `StateTtlConfig.UpdateType.OnReadAndWrite` - 读取时也更新
+
+数据在过期但还未被清理时的可见性配置如下(默认为NeverReturnExpired)：
+
+- `StateTtlConfig.StateVisibility.NeverReturnExpired` - 不返回过期数据
+- `StateTtlConfig.StateVisibility.ReturnExpiredIfNotCleanedUp` - 会返回过期但未清理的数据
+
+`NeverReturnExpired` 情况下，过期数据就像不存在一样，不管是否被物理删除。这对于不能访问过期数据的场景下非常有用，比如敏感数据。 `ReturnExpiredIfNotCleanedUp` 在数据被物理删除前都会返回。
+
+**注意：**
+
+- 状态上次的修改时间会和数据一起保存在state backend中，因此开启该特性会增加状态数据的存储。Heap State backend会额外存储一个包括用户状态以及时间戳的 Java 对象，RocksDB state backend会在每个状态值(list或map的每个元素)序列化后增加 8 个字节。
+- 暂时只支持基于 *processing time* 的 TTL。
+- 尝试从 checkpoint/savepoint 进行恢复时，TTL 的状态（是否开启）必须和之前保持一致，否则会遇到 “StateMigrationException”。
+- TTL 的配置并不会保存在 checkpoint/savepoint 中，仅对当前 Job 有效。
+- 当前开启 TTL 的 map state 仅在用户值序列化器支持 null 的情况下，才支持用户值为 null。如果用户值序列化器不支持 null， 可以用 `NullableSerializer` 包装一层。
+
+### 4.1 过期数据的清理
+
+默认情况下，过期数据会在读取的时候被删除，例如 `ValueState#value`，同时会有后台线程定期清理（如果 StateBackend 支持的话）。可以通过 `StateTtlConfig` 配置关闭后台清理：
+
+```java
+import org.apache.flink.api.common.state.StateTtlConfig;
+
+StateTtlConfig ttlConfig = StateTtlConfig
+    .newBuilder(Time.seconds(1))
+    .disableCleanupInBackground()
+    .build();
+```
+
+可以对过期数据清理配置更细粒度的清理策略，当前的实现中HeapStateBackend依赖增量数据清理，RocksDBStateBackend利用压缩过滤器进行后台清理。
+
+### 4.2 全量快照进行清理
+
+另外，你可以启用全量快照时进行清理的策略，这可以减少整个快照的大小。当前实现中不会清理本地的状态，但从上次快照恢复时，不会恢复那些已经删除的过期数据。 该策略可以通过 `StateTtlConfig` 配置进行配置：
+
