@@ -170,3 +170,238 @@ StateTtlConfig ttlConfig = StateTtlConfig
 
 另外，你可以启用全量快照时进行清理的策略，这可以减少整个快照的大小。当前实现中不会清理本地的状态，但从上次快照恢复时，不会恢复那些已经删除的过期数据。 该策略可以通过 `StateTtlConfig` 配置进行配置：
 
+```java
+import org.apache.flink.api.common.state.StateTtlConfig;
+import org.apache.flink.api.common.time.Time;
+
+StateTtlConfig ttlConfig = StateTtlConfig
+    .newBuilder(Time.seconds(1))
+    .cleanupFullSnapshot()
+    .build();
+```
+
+这种策略在`RocksDBStateBackend` 的增量 checkpoint 模式下无效。
+
+### 4.3 增量数据清理
+
+在状态访问或/和处理时进行，如果某个状态开启了该清理策略，则会在存储后端保留一个所有状态的惰性全局迭代器。每次触发增量清理时，从迭代器中选择已经过期的数进行清理。
+
+该特性可以通过 `StateTtlConfig` 进行配置：
+
+```java
+import org.apache.flink.api.common.state.StateTtlConfig;
+StateTtlConfig ttlConfig = StateTtlConfig
+    .newBuilder(Time.seconds(1))
+    .cleanupIncrementally(10, true)
+    .build();
+```
+
+该策略有两个参数。第一个是每次清理时检查状态的条目数；第二个参数表示是否在处理每条记录时触发清理。Heap backend默认会检查5条状态，并且关闭在每条记录时触发清理。
+
+注意：
+
+- 如果没有State访问，也没有处理数据，则不会清理过期数据
+- 增量清理会增加数据处理的耗时
+- 现在仅Heap state backend支持增量清除机制，在RocksDB state backend上启用该特性无效
+- 如果Heap state backend使用同步快照方式，则会保存一份所有key的拷贝，从而防止并发修改问题，因此会增加内存的使用
+- 对已有的作业，这个清理方式可以在任何使用通过StateTtlConfig启用或禁用该特性，比如从savepoint重启后
+
+### 4.4 在RocksDB压缩时清理
+
+如果使用RocksDB state backend，则会启用FLink为RocksDB定制的压缩过滤器。RocksDB会周期性的对数据进行合并压缩从而减少存储空间。Flink提供的RocksDB压缩过滤器会在压缩时过滤已经过期的状态数据。
+
+该特性可以通过 `StateTtlConfig` 进行配置：
+
+```java
+import org.apache.flink.api.common.state.StateTtlConfig;
+
+StateTtlConfig ttlConfig = StateTtlConfig
+    .newBuilder(Time.seconds(1))
+    .cleanupInRocksdbCompactFilter(1000)
+    .build();
+```
+
+Flink会处理一定条数的状态数据后，会使用当前时间戳来检测RocksDB中的状态是否已经过期，可以通过`StateTtlConfig.newBuilder(...).cleanupInRocksdbCompactFilter(long queryTimeAfterNumEntries)` 方法指定处理状态的条数。时间戳更新的越频繁，状态的清理越及时，但由于压缩会有调用JNI的开销，因此会影响整体的压缩性能。 RocksDB backend 的默认后台清理策略会每处理 1000 条数据进行一次。
+
+你还可以通过配置开启 RocksDB 过滤器的 debug 日志： `log4j.logger.org.rocksdb.FlinkCompactionFilter=DEBUG`
+
+注意：
+
+- 压缩时调用TTL过滤器会降低速度。TTL过滤器需要解析上次访问的时间戳，并对每个将参与压缩的状态进行是否过期检查。 对于集合型状态类型（比如 list 和 map），会对集合中每个元素进行检查。
+- 对于元素序列化后长度不固定的列表状态，TTL 过滤器需要在每次 JNI 调用过程中，额外调用 Flink 的 java 序列化器， 从而确定下一个未过期数据的位置。
+- 对已有的作业，这个清理方式可以在任何时候通过 `StateTtlConfig` 启用或禁用该特性，比如从 savepoint 重启后。
+
+## 5. 使用Managed Operator State
+
+用户可以通过实现 `CheckpointedFunction` 或 `ListCheckpointed<T extends Serializable>` 接口来使用 managed operator state。
+
+### 5.1 CheckpointedFunction
+
+CheckpointedFunction接口提供了访问non-keyed state的方法，需要实现以下两个方法：
+
+```java
+public interface CheckpointedFunction {
+
+	/**
+	 * This method is called when a snapshot for a checkpoint is requested. This acts as a hook to the function to
+	 * ensure that all state is exposed by means previously offered through {@link FunctionInitializationContext} when
+	 * the Function was initialized, or offered now by {@link FunctionSnapshotContext} itself.
+	 *
+	 * @param context the context for drawing a snapshot of the operator
+	 * @throws Exception
+	 */
+	void snapshotState(FunctionSnapshotContext context) throws Exception;
+
+	/**
+	 * This method is called when the parallel function instance is created during distributed
+	 * execution. Functions typically set up their state storing data structures in this method.
+	 *
+	 * @param context the context for initializing the operator
+	 * @throws Exception
+	 */
+	void initializeState(FunctionInitializationContext context) throws Exception;
+
+}
+```
+
+进行checkpoint时会调用`snapshotState()`。用户自定义函数初始化时会调用`initializeState()`。初始化包括第一次自定义函数初始化和从之前的 checkpoint 恢复。 因此 `initializeState()` 不仅是定义不同状态类型初始化的地方，也需要包括状态恢复的逻辑。
+
+当前，managed operator state 以 list 的形式存在。这些状态是一个 *可序列化* 对象的集合 `List`，彼此独立，方便在改变并发后进行状态的重新分派。 换句话说，这些对象是重新分配 non-keyed state 的最细粒度。根据状态的不同访问方式，有如下几种重新分配的模式：
+
+- **Even-split redistribution:** 每个算子都保存一个列表形式的状态集合，整个状态由所有的列表拼接而成。当作业恢复或重新分配的时候，整个状态会按照算子的并发度进行均匀分配。 比如说，算子 A 的并发读为 1，包含两个元素 `element1` 和 `element2`，当并发读增加为 2 时，`element1` 会被分到并发 0 上，`element2` 则会被分到并发 1 上。
+- **Union redistribution:** 每个算子保存一个列表形式的状态集合。整个状态由所有的列表拼接而成。当作业恢复或重新分配时，每个算子都将获得所有的状态数据。
+
+下面的例子中的 `SinkFunction` 在 `CheckpointedFunction` 中进行数据缓存，然后统一发送到下游，这个例子演示了列表状态数据的 event-split redistribution。
+
+```java
+public class BufferingSink
+        implements SinkFunction<Tuple2<String, Integer>>,
+                   CheckpointedFunction {
+
+    private final int threshold;
+
+    private transient ListState<Tuple2<String, Integer>> checkpointedState;
+
+    private List<Tuple2<String, Integer>> bufferedElements;
+
+    public BufferingSink(int threshold) {
+        this.threshold = threshold;
+        this.bufferedElements = new ArrayList<>();
+    }
+
+    @Override
+    public void invoke(Tuple2<String, Integer> value, Context contex) throws Exception {
+        bufferedElements.add(value);
+        if (bufferedElements.size() == threshold) {
+            for (Tuple2<String, Integer> element: bufferedElements) {
+                // send it to the sink
+            }
+            bufferedElements.clear();
+        }
+    }
+
+    @Override
+    public void snapshotState(FunctionSnapshotContext context) throws Exception {
+        checkpointedState.clear();
+        for (Tuple2<String, Integer> element : bufferedElements) {
+            checkpointedState.add(element);
+        }
+    }
+
+    @Override
+    public void initializeState(FunctionInitializationContext context) throws Exception {
+        ListStateDescriptor<Tuple2<String, Integer>> descriptor =
+            new ListStateDescriptor<>(
+                "buffered-elements",
+                TypeInformation.of(new TypeHint<Tuple2<String, Integer>>() {}));
+
+        checkpointedState = context.getOperatorStateStore().getListState(descriptor);
+
+        if (context.isRestored()) {
+            for (Tuple2<String, Integer> element : checkpointedState.get()) {
+                bufferedElements.add(element);
+            }
+        }
+    }
+}
+```
+
+`initializeState`方法接收一个`FunctionInitializationContext`参数，会用来初始化`non-keyed state `的容器，这些容器是一个 `ListState` 用于在 checkpoint 时保存 non-keyed state 对象。
+
+注意这些状态是如何初始化的，和 keyed state 类系，`StateDescriptor` 会包括状态名字、以及状态类型相关信息。
+
+```java
+ListStateDescriptor<Tuple2<String, Integer>> descriptor =
+    new ListStateDescriptor<>(
+        "buffered-elements",
+        TypeInformation.of(new TypeHint<Tuple2<Long, Long>>() {}));
+
+checkpointedState = context.getOperatorStateStore().getListState(descriptor);
+```
+
+调用不同的获取状态对象的接口，会使用不同的状态分配算法。比如 `getUnionListState(descriptor)` 会使用 union redistribution 算法， 而 `getListState(descriptor)` 则简单的使用 even-split redistribution 算法。
+
+当初始化好状态对象后，通过 `isRestored()` 方法判断是否从之前的故障中恢复回来，如果该方法返回 `true` 则表示从故障中进行恢复，会执行接下来的恢复逻辑。
+
+正如代码所示，BufferingSink中初始化时，恢复回来的 `ListState` 的所有元素会添加到一个局部变量中，供下次 `snapshotState()` 时使用。 然后清空 `ListState`，再把当前局部变量中的所有元素写入到 checkpoint 中。
+
+另外，同样可以在 `initializeState()` 方法中使用 `FunctionInitializationContext` 初始化 keyed state。
+
+### 5.2 ListCheckpointed
+
+`ListCheckpointed` 接口是 `CheckpointedFunction` 的精简版，仅支持 even-split redistributuion 的 list state。同样需要实现两个方法：
+
+```
+List<T> snapshotState(long checkpointId, long timestamp) throws Exception;
+
+void restoreState(List<T> state) throws Exception;
+```
+
+`snapshotState()` 需要返回一个将写入到 checkpoint 的对象列表，`restoreState` 则需要处理恢复回来的对象列表。如果状态不可切分， 则可以在 `snapshotState()` 中返回 `Collections.singletonList(MY_STATE)`。
+
+### 5.3 带状态的 Source Function
+
+带状态的数据源比其他的算子需要注意更多东西。为了保证更新状态以及输出的原子性（用于支持 exactly-once 语义），用户需要在发送数据前获取数据源的全局锁。
+
+```java
+public static class CounterSource
+        extends RichParallelSourceFunction<Long>
+        implements ListCheckpointed<Long> {
+
+    /**  current offset for exactly once semantics */
+    private Long offset = 0L;
+
+    /** flag for job cancellation */
+    private volatile boolean isRunning = true;
+
+    @Override
+    public void run(SourceContext<Long> ctx) {
+        final Object lock = ctx.getCheckpointLock();
+
+        while (isRunning) {
+            // output and state update are atomic
+            synchronized (lock) {
+                ctx.collect(offset);
+                offset += 1;
+            }
+        }
+    }
+
+    @Override
+    public void cancel() {
+        isRunning = false;
+    }
+
+    @Override
+    public List<Long> snapshotState(long checkpointId, long checkpointTimestamp) {
+        return Collections.singletonList(offset);
+    }
+
+    @Override
+    public void restoreState(List<Long> state) {
+        for (Long s : state)
+            offset = s;
+    }
+}
+```
+

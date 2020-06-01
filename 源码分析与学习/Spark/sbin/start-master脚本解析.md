@@ -78,7 +78,7 @@ D:\coding-env\Java\jdk1.8.0_71\bin\java -cp "F:\spark-2.4.0-bin-hadoop2.7/conf\;
 
 ## 3.2 启动命令
 
-```
-
+```sh
+./ start-master.sh
 ```
 
