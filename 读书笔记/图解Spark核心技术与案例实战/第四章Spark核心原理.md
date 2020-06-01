@@ -77,18 +77,29 @@ Spark启动过程主要是进行Master和Worker之间的通信，其消息发送
 // A thread pool for registering with masters. Because registering with a master is a blocking
   // action, this thread pool must be able to create "masterRpcAddresses.size" threads at the same
   // time so that we can register with all masters.
-  private val registerMasterThreadPool = ThreadUtils.newDaemonCachedThreadPool(
-    "worker-register-master-threadpool",
-    masterRpcAddresses.length // Make sure we can register with all masters at the same time
-  )
+private val registerMasterThreadPool = ThreadUtils.newDaemonCachedThreadPool(
+  "worker-register-master-threadpool",
+  masterRpcAddresses.length // Make sure we can register with all masters at the same time
+)
+
+// A thread pool for registering with masters. Because registering with a master is a blocking
+  // action, this thread pool must be able to create "masterRpcAddresses.size" threads at the same
+  // time so that we can register with all masters.
+private val registerMasterThreadPool = ThreadUtils.newDaemonCachedThreadPool(
+  "worker-register-master-threadpool",
+  masterRpcAddresses.length // Make sure we can register with all masters at the same time
+)
 
 private def tryRegisterAllMasters(): Array[JFuture[_]] = {
+   // 对masterRpcAddress集合分别调用map中的方法
     masterRpcAddresses.map { masterAddress =>
       registerMasterThreadPool.submit(new Runnable {
         override def run(): Unit = {
           try {
             logInfo("Connecting to master " + masterAddress + "...")
+            // 获取master节点的RpcEndPointRef
             val masterEndpoint = rpcEnv.setupEndpointRef(masterAddress, Master.ENDPOINT_NAME)
+            // 调用向master注册方法
             sendRegisterMessageToMaster(masterEndpoint)
           } catch {
             case ie: InterruptedException => // Cancelled
@@ -98,6 +109,405 @@ private def tryRegisterAllMasters(): Array[JFuture[_]] = {
       })
     }
   }
+```
+
+其中sendRegisterMessageToMaster方法代码如下
+
+```scala
+private def sendRegisterMessageToMaster(masterEndpoint: RpcEndpointRef): Unit = {
+    masterEndpoint.send(RegisterWorker(
+      workerId,
+      host,
+      port,
+      self,
+      cores,
+      memory,
+      workerWebUiUrl,
+      masterEndpoint.address))
+  }
+```
+
+**（2）**Master收到消息后，需要对Worker发送的消息进行验证、记录。如果注册成功，则发送RegisterWorker消息给对应的Worker，告诉Worker已经完成注册，随之进行步骤3，及Worker定期发送心跳信息给Master：如果注册过程中是被，则会发送RegisterWorkerFailed消息，worker打印出错日志并结束Worker启动。
+
+在Master中，Maste接收到Worker消息后，先判断Master当前状态是否处于STANDBY状态，如果是则忽略该消息，如果在注册列表中发现了该Worker的编号，则发送注册失败的消息。判断完毕后使用RegisterWorker方法把该Worker加入列表中，用于集群进行处理任务时进行调度。Master.receive方法中注册Worker代码实现如下所示：
+
+```scala
+case RegisterWorker(
+    id, workerHost, workerPort, workerRef, cores, memory, workerWebUiUrl, masterAddress) =>
+  // 日志打印
+	logInfo("Registering worker %s:%d with %d cores, %s RAM".format(
+    workerHost, workerPort, cores, Utils.megabytesToString(memory)))
+
+ // 如果是STANDBY，发送MasterInStandBy消息
+  if (state == RecoveryState.STANDBY) {
+    workerRef.send(MasterInStandby)
+  } else if (idToWorker.contains(id)) {
+    workerRef.send(RegisterWorkerFailed("Duplicate worker ID"))
+  } else {
+    val worker = new WorkerInfo(id, workerHost, workerPort, cores, memory,
+                                workerRef, workerWebUiUrl)
+    // registerWorker方法中注册Worker，该方法会讲Worker放到列表中，用于后续运行/调度Task时使用
+    if (registerWorker(worker)) {
+      persistenceEngine.addWorker(worker)
+      workerRef.send(RegisteredWorker(self, masterWebUiUrl, masterAddress))
+      schedule()
+    } else {
+      val workerAddress = worker.endpoint.address
+      logWarning("Worker registration failed. Attempted to re-register worker at same " +
+                 "address: " + workerAddress)
+      workerRef.send(RegisterWorkerFailed("Attempted to re-register worker at same address: "
+                                          + workerAddress))
+    }
+  }
+
+```
+
+其中registerWorker方法源码如下：
+
+```scala
+private def registerWorker(worker: WorkerInfo): Boolean = {
+  // There may be one or more refs to dead workers on this same node (w/ different ID's),
+  // remove them.
+  workers.filter { w =>
+    (w.host == worker.host && w.port == worker.port) && (w.state == WorkerState.DEAD)
+  }.foreach { w =>
+    workers -= w
+  }
+
+  val workerAddress = worker.endpoint.address
+  if (addressToWorker.contains(workerAddress)) {
+    val oldWorker = addressToWorker(workerAddress)
+    if (oldWorker.state == WorkerState.UNKNOWN) {
+      // A worker registering from UNKNOWN implies that the worker was restarted during recovery.
+      // The old worker must thus be dead, so we will remove it and accept the new worker.
+      removeWorker(oldWorker, "Worker replaced by a new worker with same address")
+    } else {
+      logInfo("Attempted to re-register worker at same address: " + workerAddress)
+      return false
+    }
+  }
+
+  workers += worker
+  idToWorker(worker.id) = worker
+  addressToWorker(workerAddress) = worker
+  true
+}
+```
+
+**（3）**当Worker注册成功后，会定时发送心跳信息Heartbear给Master，以便Master了解Worker的实时动态，时间间隔可以在`spark.worker.timeout`中设置，注意的是，该设置值的1/4为心跳间隔。因为如果心跳检测失败，Master会等待Worker再发送3次，因此总有用4次等待。
+
+```scala
+  private val HEARTBEAT_MILLIS = conf.getLong("spark.worker.timeout", 60) * 1000 / 4
+```
+
+当Worker获取到注册成功的消息后，先记录日志并更新Master信息，然后启动定时调度进程发送心跳信息，该调度进程时间间隔为上面所定义的HEARTBEAT_MILLIS值。
+
+```scala
+case RegisteredWorker(masterRef, masterWebUiUrl, masterAddress) =>
+        if (preferConfiguredMasterAddress) {
+          logInfo("Successfully registered with master " + masterAddress.toSparkURL)
+        } else {
+          logInfo("Successfully registered with master " + masterRef.address.toSparkURL)
+        }
+        registered = true
+        changeMaster(masterRef, masterWebUiUrl, masterAddress)
+        forwordMessageScheduler.scheduleAtFixedRate(new Runnable {
+          override def run(): Unit = Utils.tryLogNonFatalError {
+            self.send(SendHeartbeat)
+          }
+        }, 0, HEARTBEAT_MILLIS, TimeUnit.MILLISECONDS)
+       // 如果设置了清理以前应用使用的文件夹，则进行操作
+        if (CLEANUP_ENABLED) {
+          logInfo(
+            s"Worker cleanup enabled; old application directories will be deleted in: $workDir")
+          forwordMessageScheduler.scheduleAtFixedRate(new Runnable {
+            override def run(): Unit = Utils.tryLogNonFatalError {
+              self.send(WorkDirCleanup)
+            }
+          }, CLEANUP_INTERVAL_MILLIS, CLEANUP_INTERVAL_MILLIS, TimeUnit.MILLISECONDS)
+        }
+        // 向Master回报Worker中的Executor最新状态，包括运行ApplicationID，ExecutorID，
+        // Executor核数，Executor状态
+        val execs = executors.values.map { e =>
+          new ExecutorDescription(e.appId, e.execId, e.cores, e.state)
+        }
+        masterRef.send(WorkerLatestState(workerId, execs.toList, drivers.keys.toSeq))
+```
+
+### 4.1.3 Spark运行时消息通信
+
+用户提交应用程序时，应用程序的SparkContext会向Master发送应用注册信息，并由Master给该应用分配Executor，Executor启动后，Executor会向SparkContext发送注册成功消息；当SparkContext的RDD触发行动操作后，将创建RDD的DAG，通过DAGScheduler进行划分Stage，并将Stage转化为TaskSet；接着由TaskScheduler向注册后的Executor发送执行消息，Executor接收到任务消息后启动并运行；最后当所有任务运行时，由Driver处理结果并回收资源。图4-4为Spark运行消息通信的交互过程。
+
+![](img/4-4.jpg)
+
+详细过程如下：
+
+（1）执行应用程序需启动SparkContext，在SparkContext启动过程中会先实例化ScheduleBackend对象，在独立运行(Standlone)实际创建的是SparkDeploySchedulerBackend对象，在对象的启动中会继承父类DriverEndpoint和创建Appclient的ClintEndpoint的两个终端点。
+
+在ClientEndpoint的tryRegisterAllMaster方法中创建注册线程池registerMasterThreadPool，在线程池中启动注册线程并向Master发送RegisterApplication注册应用的消息，代码如下所示：
+
+```scala
+// org.apache.spark.deploy.client.StandaloneAppClient.ClientEndpoint#tryRegisterAllMasters
+private def tryRegisterAllMasters(): Array[JFuture[_]] = {
+     // 由于HA等环境有多个Master，需要遍历所有Master发送消息
+      for (masterAddress <- masterRpcAddresses) yield {
+        // 向线程池中启动注册线程，当该线程读取到应用注册成功的标示register=true时退出该线程
+        registerMasterThreadPool.submit(new Runnable {
+          override def run(): Unit = try {
+            if (registered.get) {
+              return
+            }
+            logInfo("Connecting to master " + masterAddress.toSparkURL + "...")
+            // 获取master终端点的应用，发送注册信息
+            val masterRef = rpcEnv.setupEndpointRef(masterAddress, Master.ENDPOINT_NAME)
+            masterRef.send(RegisterApplication(appDescription, self))
+          } catch {
+            case ie: InterruptedException => // Cancelled
+            case NonFatal(e) => logWarning(s"Failed to connect to master $masterAddress", e)
+          }
+        })
+      }
+    }
+```
+
+当Master接收到注册应用的消息时，在registerApplication方法中记录应用信息并把该应用加入到等待运行应用列表中，注册完毕后发送成功消息RegistedApplication给clientEndpoin(在Master.receive方法中)，同时调用startExecutorOnWorker方法运行应用，在执行前需要获取应用的Worker，然后发送LaunchExecutor消息给Worker，通知Worker启动Executor。Master.registerApplication方法与Master.startExecutorOnWorker方法如下：
+
+```scala
+// Master接收注册消息
+override def receive: PartialFunction[Any, Unit] = {
+  case RegisterApplication(description, driver) =>
+      // TODO Prevent repeated registrations from some driver
+      if (state == RecoveryState.STANDBY) {
+        // ignore, don't send response
+      } else {
+        logInfo("Registering app " + description.name)
+        // 创建App
+        val app = createApplication(description, driver)
+        // 向Master注册App
+        registerApplication(app)
+        logInfo("Registered app " + description.name + " with ID " + app.id)
+        persistenceEngine.addApplication(app)
+        // 发送消息给Client
+        driver.send(RegisteredApplication(app.id, self))
+        // 调用startExecutorsOnWorkers
+        schedule()
+      }
+}
+
+private def registerApplication(app: ApplicationInfo): Unit = {
+    val appAddress = app.driver.address
+    // 判断是否重复添加应用
+    if (addressToApp.contains(appAddress)) {
+      logInfo("Attempted to re-register application at same address: " + appAddress)
+      return
+    }
+    // application运行指标系统
+    applicationMetricsSystem.registerSource(app.appSource)
+    // 
+    apps += app
+    idToApp(app.id) = app
+    endpointToApp(app.driver) = app
+    addressToApp(appAddress) = app
+    // 添加至待执行app列表
+    waitingApps += app
+  }
+```
+
+```scala
+/**
+   * Schedule and launch executors on workers
+   */
+private def startExecutorsOnWorkers(): Unit = {
+  // Right now this is a very simple FIFO scheduler. We keep trying to fit in the first app
+  // 先进先出调度器
+  // in the queue, then the second app, etc.
+  for (app <- waitingApps) {
+    val coresPerExecutor = app.desc.coresPerExecutor.getOrElse(1)
+    // If the cores left is less than the coresPerExecutor,the cores left will not be allocated
+    if (app.coresLeft >= coresPerExecutor) {
+      // Filter out workers that don't have enough resources to launch an executor
+      val usableWorkers = workers.toArray.filter(_.state == WorkerState.ALIVE)
+      .filter(worker => worker.memoryFree >= app.desc.memoryPerExecutorMB &&
+              worker.coresFree >= coresPerExecutor)
+      .sortBy(_.coresFree).reverse // 根据Worker剩余CPU核数排序
+      val assignedCores = scheduleExecutorsOnWorkers(app, usableWorkers, spreadOutApps)
+
+      // Now that we've decided how many cores to allocate on each worker, let's allocate them
+      for (pos <- 0 until usableWorkers.length if assignedCores(pos) > 0) {
+        allocateWorkerResourceToExecutors(
+          app, assignedCores(pos), app.desc.coresPerExecutor, usableWorkers(pos))
+      }
+    }
+  }
+}
+```
+
+（2）AppClient.ClientEndpoint接收到Master发送的RegisteredApplication消息，需要把注册标示registered置为true，Master注册线程获取状态变化后，完成注册Application进程，代码如下：
+
+```scala
+// StandloneAppClient
+private class ClientEndpoint(override val rpcEnv: RpcEnv) extends ThreadSafeRpcEndpoint with Logging 
+
+
+case RegisteredApplication(appId_, masterRef) =>
+        // FIXME How to handle the following cases?
+        // 1. A master receives multiple registrations and sends back multiple
+        // RegisteredApplications due to an unstable network.
+        // 2. Receive multiple RegisteredApplication from different masters because the master is
+        // changing.
+        appId.set(appId_)
+        registered.set(true)
+        master = Some(masterRef)
+        // 完成Application注册
+        listener.connected(appId.get)
+```
+
+（3）在Master类的startExecutorOnWorker方法中分配资源运行应用程序时，allocateWorkerResourceToExecutors方法实现在Worker中启动Executor，当Worker收到发送过来的LaunchExecutor消息，先实例化ExecutorRunner对象，在ExecutorRunner启动中会创建进程生成器ProcessBuilder，然后由该生成器使用command创建CoarseGrainedExecutorBackend对象，该对象是Executor运行的容器，最后Worker发送ExecutorStateChanged消息给Master，通知Executor容器创建完毕。
+
+当Worker接收启动Exceutor消息，执行代码如下：
+
+```scala
+case LaunchExecutor(masterUrl, appId, execId, appDesc, cores_, memory_) =>
+      if (masterUrl != activeMasterUrl) {
+        logWarning("Invalid Master (" + masterUrl + ") attempted to launch executor.")
+      } else {
+        try {
+          logInfo("Asked to launch executor %s/%d for %s".format(appId, execId, appDesc.name))
+
+          // Create the executor's working directory
+          // 创建Executor执行目录
+          val executorDir = new File(workDir, appId + "/" + execId)
+          if (!executorDir.mkdirs()) {
+            throw new IOException("Failed to create directory " + executorDir)
+          }
+
+          // Create local dirs for the executor. These are passed to the executor via the
+          // SPARK_EXECUTOR_DIRS environment variable, and deleted by the Worker when the
+          // application finishes.
+          // 通过SPARK_EXECUTOR_DIRS环境变量，在Worker中创建Executor执行目录，当程序执行完毕后由Worker删除
+          val appLocalDirs = appDirectories.getOrElse(appId, {
+            val localRootDirs = Utils.getOrCreateLocalRootDirs(conf)
+            val dirs = localRootDirs.flatMap { dir =>
+              try {
+                val appDir = Utils.createDirectory(dir, namePrefix = "executor")
+                Utils.chmod700(appDir)
+                Some(appDir.getAbsolutePath())
+              } catch {
+                case e: IOException =>
+                  logWarning(s"${e.getMessage}. Ignoring this directory.")
+                  None
+              }
+            }.toSeq
+            if (dirs.isEmpty) {
+              throw new IOException("No subfolder can be created in " +
+                s"${localRootDirs.mkString(",")}.")
+            }
+            dirs
+          })
+          appDirectories(appId) = appLocalDirs
+          // 实例化ExecutorRunner
+          val manager = new ExecutorRunner(
+            appId,
+            execId,
+            appDesc.copy(command = Worker.maybeUpdateSSLSettings(appDesc.command, conf)),
+            cores_,
+            memory_,
+            self,
+            workerId,
+            host,
+            webUi.boundPort,
+            publicAddress,
+            sparkHome,
+            executorDir,
+            workerUri,
+            conf,
+            appLocalDirs, ExecutorState.RUNNING)
+          // 加入Worker的Exceutor Map集合列表
+          executors(appId + "/" + execId) = manager
+          // 启动ExecutorRunner
+          manager.start()
+          coresUsed += cores_
+          memoryUsed += memory_
+          // 向Master发送消息，表示Executor状态已经更改为ExecutorState.RUNNING
+          sendToMaster(ExecutorStateChanged(appId, execId, manager.state, None, None))
+        } catch {
+          case e: Exception =>
+            logError(s"Failed to launch executor $appId/$execId for ${appDesc.name}.", e)
+            if (executors.contains(appId + "/" + execId)) {
+              executors(appId + "/" + execId).kill()
+              executors -= appId + "/" + execId
+            }
+            sendToMaster(ExecutorStateChanged(appId, execId, ExecutorState.FAILED,
+              Some(e.toString), None))
+        }
+      }
+```
+
+在Executor创建中调用了fetchAndRunExecutor方法进行实现，该方法中command内容在SparkDeploySchedularBackend中定义，指定构造器Exceutor运行容器CoarseGrainedExecutorBackend，其中创建代码过程如下：
+
+```scala
+ /**
+   * Download and run the executor described in our ApplicationDescription
+   */
+private def fetchAndRunExecutor() {
+  try {
+    // Launch the process
+    // 通过应用程序的信息和环境配置创建构造器builder
+    val builder = CommandUtils.buildProcessBuilder(appDesc.command, new SecurityManager(conf),
+                                                   memory, sparkHome.getAbsolutePath, substituteVariables)
+    val command = builder.command()
+    val formattedCommand = command.asScala.mkString("\"", "\" \"", "\"")
+    logInfo(s"Launch command: $formattedCommand")
+    
+    //在构造器Builder中添加执行目录等信息 
+    builder.directory(executorDir)
+    builder.environment.put("SPARK_EXECUTOR_DIRS", appLocalDirs.mkString(File.pathSeparator))
+    // In case we are running this from within the Spark Shell, avoid creating a "scala"
+    // parent process for the executor command
+    builder.environment.put("SPARK_LAUNCH_WITH_SCALA", "0")
+
+    // Add webUI log urls
+    val baseUrl =
+    if (conf.getBoolean("spark.ui.reverseProxy", false)) {
+      s"/proxy/$workerId/logPage/?appId=$appId&executorId=$execId&logType="
+    } else {
+      s"http://$publicAddress:$webUiPort/logPage/?appId=$appId&executorId=$execId&logType="
+    }
+    builder.environment.put("SPARK_LOG_URL_STDERR", s"${baseUrl}stderr")
+    builder.environment.put("SPARK_LOG_URL_STDOUT", s"${baseUrl}stdout")
+
+    // 启动构造器，创建CoarseGrainedExecutorBackend实例
+    process = builder.start()
+    val header = "Spark Executor Command: %s\n%s\n\n".format(
+      formattedCommand, "=" * 40)
+
+    // Redirect its stdout and stderr to files
+    // 输出创建CoarseGrainedExecutorBackend实例运行信息
+    val stdout = new File(executorDir, "stdout")
+    stdoutAppender = FileAppender(process.getInputStream, stdout, conf)
+
+    val stderr = new File(executorDir, "stderr")
+    Files.write(header, stderr, StandardCharsets.UTF_8)
+    stderrAppender = FileAppender(process.getErrorStream, stderr, conf)
+
+    // Wait for it to exit; executor may exit with code 0 (when driver instructs it to shutdown)
+    // or with nonzero exit code
+    // 等待创建CoarseGrainedExecutorBackend实例运行结束，当结束时向Worker发送退出的状态信息
+    val exitCode = process.waitFor()
+    state = ExecutorState.EXITED
+    val message = "Command exited with code " + exitCode
+    worker.send(ExecutorStateChanged(appId, execId, state, Some(message), Some(exitCode)))
+  } catch {
+    case interrupted: InterruptedException =>
+    logInfo("Runner thread for executor " + fullId + " interrupted")
+    state = ExecutorState.KILLED
+    killProcess(None)
+    case e: Exception =>
+    logError("Error running executor", e)
+    state = ExecutorState.FAILED
+    killProcess(Some(e.toString))
+  }
+}
 ```
 
 
