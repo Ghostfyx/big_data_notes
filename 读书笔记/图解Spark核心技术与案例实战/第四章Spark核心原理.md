@@ -496,6 +496,7 @@ private def fetchAndRunExecutor() {
     val exitCode = process.waitFor()
     state = ExecutorState.EXITED
     val message = "Command exited with code " + exitCode
+    // 发出状态退出信息
     worker.send(ExecutorStateChanged(appId, execId, state, Some(message), Some(exitCode)))
   } catch {
     case interrupted: InterruptedException =>
@@ -510,7 +511,209 @@ private def fetchAndRunExecutor() {
 }
 ```
 
+（4）Master接收到Worker发送的ExecutorStateChange消息，并转发消息给Driver，并根据EexcuateState状态进行不同处理机制。
 
+```scala
+case ExecutorStateChanged(appId, execId, state, message, exitStatus) =>
+      val execOption = idToApp.get(appId).flatMap(app => app.executors.get(execId))
+      execOption match {
+        case Some(exec) =>
+          val appInfo = idToApp(appId)
+          val oldState = exec.state
+          exec.state = state
+
+          if (state == ExecutorState.RUNNING) {
+            assert(oldState == ExecutorState.LAUNCHING,
+              s"executor $execId state transfer from $oldState to RUNNING is illegal")
+            appInfo.resetRetryCount()
+          }
+
+          // 向Driver发送Executor状态变更消息
+          exec.application.driver.send(ExecutorUpdated(execId, state, message, exitStatus, false))
+          // 如果是完成状态
+          if (ExecutorState.isFinished(state)) {
+            // Remove this executor from the worker and app
+            logInfo(s"Removing executor ${exec.fullId} because it is $state")
+            // If an application has already finished, preserve its
+            // state to display its information properly on the UI
+            if (!appInfo.isFinished) {
+              appInfo.removeExecutor(exec)
+            }
+            exec.worker.removeExecutor(exec)
+
+            val normalExit = exitStatus == Some(0)
+            // Only retry certain number of times so we don't go into an infinite loop.
+            // Important note: this code path is not exercised by tests, so be very careful when
+            // changing this `if` condition.
+            // We also don't count failures from decommissioned workers since they are "expected."
+            if (!normalExit
+                && oldState != ExecutorState.DECOMMISSIONED
+                && appInfo.incrementRetryCount() >= maxExecutorRetries
+                && maxExecutorRetries >= 0) { // < 0 disables this application-killing path
+              val execs = appInfo.executors.values
+              if (!execs.exists(_.state == ExecutorState.RUNNING)) {
+                logError(s"Application ${appInfo.desc.name} with ID ${appInfo.id} failed " +
+                  s"${appInfo.retryCount} times; removing it")
+                removeApplication(appInfo, ApplicationState.FAILED)
+              }
+            }
+          }
+          // 开始调度
+          schedule()
+        case None =>
+          logWarning(s"Got status update for unknown executor $appId/$execId")
+      }
+```
+
+（5）在步骤3的CoarseGrainedExecutorBackend启动方法onStart中，会发送注册Executor消息给DriverEndpoint终端点，先判断该Executor是否已经注册，如果发现已经存在发送注册失败RegisterExecutorFailed消息，否则Driver终端点会记录该Executor信息，发送注册成功RegisteredExecutor消息，在makeOffers()方法中分配运行任务资源，最终发送LaunchTask消息执行任务。
+
+在DriverEndpoint终端点进行注册Executor的过程如下：
+
+```scala
+override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
+  case RegisterExecutor(executorId, executorRef, hostname, cores, logUrls,
+                        attributes, resources, resourceProfileId) =>
+  // 如果Executor已经注册，返回注册失败消息
+  if (executorDataMap.contains(executorId)) {
+    context.sendFailure(new IllegalStateException(s"Duplicate executor ID: $executorId"))
+  } else if (scheduler.nodeBlacklist.contains(hostname) ||
+             isBlacklisted(executorId, hostname)) {
+    // If the cluster manager gives us an executor on a blacklisted node (because it
+    // already started allocating those resources before we informed it of our blacklist,
+    // or if it ignored our blacklist), then we reject that executor immediately.
+    logInfo(s"Rejecting $executorId as it has been blacklisted.")
+    context.sendFailure(new IllegalStateException(s"Executor is blacklisted: $executorId"))
+  } else {
+    // If the executor's rpc env is not listening for incoming connections, `hostPort`
+    // will be null, and the client connection should be used to contact the executor.
+    val executorAddress = if (executorRef.address != null) {
+      executorRef.address
+    } else {
+      context.senderAddress
+    }
+    logInfo(s"Registered executor $executorRef ($executorAddress) with ID $executorId, " +
+            s" ResourceProfileId $resourceProfileId")
+    //记录Executor编号以及该Executor需要的CPU核数
+    addressToExecutorId(executorAddress) = executorId
+    totalCoreCount.addAndGet(cores)
+    totalRegisteredExecutors.addAndGet(1)
+    val resourcesInfo = resources.map { case (rName, info) =>
+      // tell the executor it can schedule resources up to numSlotsPerAddress times,
+      // as configured by the user, or set to 1 as that is the default (1 task/resource)
+      val numParts = scheduler.sc.resourceProfileManager
+      .resourceProfileFromId(resourceProfileId).getNumSlotsPerAddress(rName, conf)
+      (info.name, new ExecutorResourceInfo(info.name, info.addresses, numParts))
+    }
+    val data = new ExecutorData(executorRef, executorAddress, hostname,
+                                0, cores, logUrlHandler.applyPattern(logUrls, attributes), attributes,
+                                resourcesInfo, resourceProfileId)
+    // This must be synchronized because variables mutated
+    // in this block are read when requesting executors
+    // 创建Executor编号及其具体信息的键值列表
+    CoarseGrainedSchedulerBackend.this.synchronized {
+      executorDataMap.put(executorId, data)
+      if (currentExecutorIdCounter < executorId.toInt) {
+        currentExecutorIdCounter = executorId.toInt
+      }
+    }
+    listenerBus.post(
+      SparkListenerExecutorAdded(System.currentTimeMillis(), executorId, data))
+    // Note: some tests expect the reply to come after we put the executor in the map
+    context.reply(true)
+  }
+```
+
+（6）当CoarseGrainedExecutorBackEnd接收到Executor注册成功RegisteredExecutor消息时，CoarseGrainedExecutorBackEnd在容器中实例化Executor对象，启动完毕后，会定时向Driver发送心跳信息，等待接收从DriverEndpoint终端点发送执行任务的消息。CoarseGrainedExecutorBackEnd处理注册成功代码如下。
+
+```scala
+  case RegisteredExecutor =>
+  logInfo("Successfully registered with driver")
+  try {
+    // 根据环境变量的参数启动Executor
+    executor = new Executor(executorId, hostname, env, userClassPath, isLocal = false,
+                            resources = _resources)
+    driver.get.send(LaunchedExecutor(executorId))
+  } catch {
+    case NonFatal(e) =>
+    exitExecutor(1, "Unable to create executor due to " + e.getMessage, e)
+  }
+```
+
+该Executor会定时发送Driver心跳信息，等待Driver下发任务：
+
+```scala
+// Executor for the heartbeat task.
+private val heartbeater = new Heartbeater(
+  () => Executor.this.reportHeartBeat(),
+  "executor-heartbeater",
+  HEARTBEAT_INTERVAL_MS)
+```
+
+（7）CoarseGrainedExecutorBackEnd的Executor启动后，接收从DriverEndpoint终端点发出的LaunchTask执行任务消息，任务执行消息是在Executor的launchTask方法实现的。在执行时会创建TaskRunner进程。由该进程进行任务的处理，处理完毕后发送StatusUpdate消息返回给CoarseGrainedExecutorBackEnd：
+
+```scala
+case LaunchTask(data) =>
+if (executor == null) {
+  exitExecutor(1, "Received LaunchTask command but executor was null")
+} else {
+  if (decommissioned) {
+    logError("Asked to launch a task while decommissioned.")
+    driver match {
+      case Some(endpoint) =>
+      logInfo("Sending DecommissionExecutor to driver.")
+      endpoint.send(DecommissionExecutor(executorId))
+      case _ =>
+      logError("No registered driver to send Decommission to.")
+    }
+  }
+  val taskDesc = TaskDescription.decode(data.value)
+  logInfo("Got assigned task " + taskDesc.taskId)
+  taskResources(taskDesc.taskId) = taskDesc.resources
+  // 启动TaskRunner进程执行任务
+  executor.launchTask(this, taskDesc)
+}
+```
+
+调用Executor的launchTask方法，在该方法中创建TaskRunner进程，然后把该进程计入到执行池ExecutorPool中，由Executor统一调度：
+
+```scala
+def launchTask(context: ExecutorBackend, taskDescription: TaskDescription): Unit = {
+  val tr = new TaskRunner(context, taskDescription)
+  runningTasks.put(taskDescription.taskId, tr)
+  threadPool.execute(tr)
+  if (decommissioned) {
+    log.error(s"Launching a task while in decommissioned state.")
+  }
+}
+```
+
+（8）在TaskRunner执行任务完成时，向DriverEndpoint终端点发送状态变更StatusUpdate消息，当DriverEndpoint接收到该消息时，调用TaskSchedulerImpl的statusUpdate方法，根据任务执行的不同结果进行处理，处理完毕后在给Executor分配执行任务，其中，在DriverEndpoint终端点处理状态变更代码如下：
+
+```scala
+case StatusUpdate(executorId, taskId, state, data, resources) =>
+// 调用TaskSchedulerImpl对StatusUpdate()方法，根据任务执行不同结果进行处理
+scheduler.statusUpdate(taskId, state, data.value)
+if (TaskState.isFinished(state)) {
+  executorDataMap.get(executorId) match {
+    // 任务执行成功后，回收该Executor执行该task的CPU，在根据实际情况分配任务
+    case Some(executorInfo) =>
+    val rpId = executorInfo.resourceProfileId
+    val prof = scheduler.sc.resourceProfileManager.resourceProfileFromId(rpId)
+    val taskCpus = ResourceProfile.getTaskCpusOrDefaultForProfile(prof, conf)
+    executorInfo.freeCores += taskCpus
+    resources.foreach { case (k, v) =>
+      executorInfo.resourcesInfo.get(k).foreach { r =>
+        r.release(v.addresses)
+      }
+    }
+    makeOffers(executorId)
+    case None =>
+    // Ignoring the update since we don't know about the executor.
+    logWarning(s"Ignored task status update ($taskId state $state) " +
+               s"from unknown executor with ID $executorId")
+  }
+}
+```
 
 ## 4.2 作业执行原理
 
@@ -544,10 +747,11 @@ Spark的作业调度主要指的是基于RDD的一系列操作构成一个作业
 
 4. Worker中的Executor接收到TaskScheduler发送过来的任务后，以多线程方式运行，每个线程负责一个任务，执行完毕，结果返回给TaskScheduler，不同任务类型返回结果不同。
 
-Spark系统实现类图如4-6所示：
+Spark系统实现类图如4-6所示，在该类图中展示了作业和任务调度方法之间的调用关系，需要注意的是，在类之间既有直接调用关系，也有通过RPC远程调用，在途中使用虚箭号进行标记。
 
 <img src="./img/4-6.jpg" style="zoom: 33%;" />
 
 ​											**图4-6 Spark独立运行模式作业执行类调用关系图**
 
-## 4.2.2 
+## 4.2.2 提交作业
+
