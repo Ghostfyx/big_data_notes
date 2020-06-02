@@ -1,5 +1,7 @@
 # RpcEnv源码分析
 
+RpcEnv定义了RPC通信框架启动、停止和关闭等抽象方法，静态方法创建RpcEnv环境。
+
 ## 1. object RpcEnv
 
 ```scala
@@ -76,7 +78,7 @@ private[spark] abstract class RpcEnv(conf: SparkConf) {
   /**
    * Register a [[RpcEndpoint]] with a name and return its [[RpcEndpointRef]]. [[RpcEnv]] does not
    * guarantee thread-safety.
-    * 使用名称注册RpcEndpoint，并返回RpcEndpointRef
+    * 使用名称注册RpcEndpoint到rpcEnv，并返回RpcEndpointRef
    */
   def setupEndpoint(name: String, endpoint: RpcEndpoint): RpcEndpointRef
 

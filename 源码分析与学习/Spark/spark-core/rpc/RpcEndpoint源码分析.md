@@ -4,6 +4,8 @@
 
 Spark不同组件之间是通过RPC（Remote Procedure Call) 进行点对点通信的。Spark 1.6推出了RPCEnv，RPCEndpoint，RPCEndpointRef为核心的新型架构下的RPC通信方式。
 
+RpcEndpoint为Rpc通信的终端点。RPCEndpointRef为RpcEndpoint的引用，通过调用RPCEndpointRef向对应的RpcEndpoint发送消息。
+
 ## 2. RpcEndPoint源码分析
 
 ```scala
