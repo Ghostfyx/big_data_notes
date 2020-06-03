@@ -755,3 +755,213 @@ Spark系统实现类图如4-6所示，在该类图中展示了作业和任务调
 
 ## 4.2.2 提交作业
 
+以经典的WordCount为例来分析提交作业的情况。
+
+```scala
+var line = sc.textFile('......')
+val wordcount = line.map(_.split(" ")).map(x => (x,1)).reduceByKey(_+_).count
+```
+
+ 这个作业的真正提交是从“count”这个行动操作出现开始的，在RDD的源码的count方法触发了SparkContext的runJob方法来提交作业，而这个提交作业是在其内部隐性调用runJob进行的，对于用户来说不用显性地去提交作业。
+
+```scala
+/**
+	* Return the number of elements in the RDD.
+*/
+def count(): Long = sc.runJob(this, Utils.getIteratorSize _).sum
+```
+
+对于RDD来说，它们会根据彼此之间的依赖关系形成一个有向无环图(DAG)，然后把这个DAG图交给DAGSheduler来处理。从源码上看，SparkContext经过几次调用后，进入DAGScheduler的runJob方法，其中SparkContext中调用DAGScheduler类runJob方法如下：
+
+```scala
+/**
+   * Run a function on a given set of partitions in an RDD and pass the results to the given
+   * handler function. This is the main entry point for all actions in Spark.
+   *
+   * @param rdd target RDD to run tasks on
+   * @param func a function to run on each partition of the RDD
+   * @param partitions set of partitions to run on; some jobs may not want to compute on all
+   * partitions of the target RDD, e.g. for operations like `first()`
+   * @param resultHandler callback to pass each result to
+   */
+def runJob[T, U: ClassTag](
+  rdd: RDD[T],
+  func: (TaskContext, Iterator[T]) => U,
+  partitions: Seq[Int],
+  resultHandler: (Int, U) => Unit): Unit = {
+  if (stopped.get()) {
+    throw new IllegalStateException("SparkContext has been shutdown")
+  }
+  val callSite = getCallSite
+  val cleanedFunc = clean(func)
+  logInfo("Starting job: " + callSite.shortForm)
+  if (conf.getBoolean("spark.logLineage", false)) {
+    logInfo("RDD's recursive dependencies:\n" + rdd.toDebugString)
+  }
+  // 调用DAGScheduler的RunJob方法
+  dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
+  progressBar.foreach(_.finishAll())
+  rdd.doCheckpoint()
+}
+```
+
+在DAGScheduler类内部会进行一系列的方法调用，首先是在runJob方法里，调用submitJob方法来继续提交作业，这里会发生阻塞，知道返回作业完成或失败的结果；然后在submitJob方法里创建JobWaiter对象，并借助内部消息处理进行把这个对象发送给DAGScheduler的内嵌类DAGSchedulerEventProcessLoop进行处理；最后DAGSchedulerEventProcessLoop消息接收方法OnReceive中，接收到JobSubmitted样例类完成模式匹配后，继续调用DAGScheduler的handleJobSubmitted方法来提交作业，在该方法中将进行划分阶段。
+
+```scala
+/**
+   * Submit an action job to the scheduler.
+   *
+   * @param rdd target RDD to run tasks on
+   * @param func a function to run on each partition of the RDD
+   * @param partitions set of partitions to run on; some jobs may not want to compute on all
+   *   partitions of the target RDD, e.g. for operations like first()
+   * @param callSite where in the user program this job was called
+   * @param resultHandler callback to pass each result to
+   * @param properties scheduler properties to attach to this job, e.g. fair scheduler pool name
+   *
+   * @return a JobWaiter object that can be used to block until the job finishes executing
+   *         or can be used to cancel the job.
+   *
+   * @throws IllegalArgumentException when partitions ids are illegal
+   */
+  def submitJob[T, U](
+      rdd: RDD[T],
+      func: (TaskContext, Iterator[T]) => U,
+      partitions: Seq[Int],
+      callSite: CallSite,
+      resultHandler: (Int, U) => Unit,
+      properties: Properties): JobWaiter[U] = {
+    // Check to make sure we are not launching a task on a partition that does not exist.
+    // 判断任务处理的分区是否存在，如果不存在则抛出异常
+    val maxPartitions = rdd.partitions.length
+    partitions.find(p => p >= maxPartitions || p < 0).foreach { p =>
+      throw new IllegalArgumentException(
+        "Attempting to access a non-existent partition: " + p + ". " +
+          "Total number of partitions: " + maxPartitions)
+    }
+
+    val jobId = nextJobId.getAndIncrement()
+    // 如果作业只包含0个任务，则创建0个Task的JobWaiter并立即返回
+    if (partitions.isEmpty) {
+      val clonedProperties = Utils.cloneProperties(properties)
+      if (sc.getLocalProperty(SparkContext.SPARK_JOB_DESCRIPTION) == null) {
+        clonedProperties.setProperty(SparkContext.SPARK_JOB_DESCRIPTION, callSite.shortForm)
+      }
+      val time = clock.getTimeMillis()
+      listenerBus.post(
+        SparkListenerJobStart(jobId, time, Seq.empty, clonedProperties))
+      listenerBus.post(
+        SparkListenerJobEnd(jobId, time, JobSucceeded))
+      // Return immediately if the job is running 0 tasks
+      return new JobWaiter[U](this, jobId, 0, resultHandler)
+    }
+
+    assert(partitions.nonEmpty)
+    val func2 = func.asInstanceOf[(TaskContext, Iterator[_]) => _]
+    // 创建JobWaiter等待作业运行完毕
+    val waiter = new JobWaiter[U](this, jobId, partitions.size, resultHandler)
+    // 使用DAGSchedulerEventProcessLoop内部类提交作业
+    eventProcessLoop.post(JobSubmitted(
+      jobId, rdd, func2, partitions.toArray, callSite, waiter,
+      Utils.cloneProperties(properties)))
+    waiter
+  }
+```
+
+在Spark应用中，会拆分多个作业，然后对多个作业之间进行调度，Spark目前提供了两种调度策略：FIFO模式和FAIR模式。
+
+### 4.2.3 划分调度阶段
+
+Spark的调度阶段是由DAGScheduler实现的，DAGScheduler会从最后一个RDD出发，使用广度优先遍历整个依赖树，从而划分调度阶段，调度阶段划分依据是以操作是否为宽依赖(ShuffleDependency)进行的，即当某个RDD的操作是Shuffle时，以该Shuffle操作为界限划分为前后两个调度阶段。
+
+代码实现是在DAGScheduler的handleJobSubmitted方法中根据最后一个RDD生成的ResultStage开始的，具体方法从finalRDD使用getOrCreateParentStages找出其依赖的祖先RDD是否存在Shuffle操作，如果没有存在Shuffle操作，本次作业存在一个ResultStage；如果存在Shuffle操作，则本次作业存在一个ResultStage和至少一个ShuffleMapStage，该ResultStage存在父调度阶段。其中handleJobSubmitted源码如下：
+
+```scala
+private[scheduler] def handleJobSubmitted(jobId: Int,
+      finalRDD: RDD[_],
+      func: (TaskContext, Iterator[_]) => _,
+      partitions: Array[Int],
+      callSite: CallSite,
+      listener: JobListener,
+      properties: Properties): Unit = {
+    var finalStage: ResultStage = null
+    try {
+      // New stage creation may throw an exception if, for example, jobs are run on a
+      // HadoopRDD whose underlying HDFS files have been deleted.
+      // 根据最后一个RDD回溯，获取最后一个调度阶段的finalStage
+      finalStage = createResultStage(finalRDD, func, partitions, jobId, callSite)
+    } catch {
+      ......
+    }
+    // Job submitted, clear internal data.
+    barrierJobIdToNumTasksCheckFailures.remove(jobId)
+  
+    // 根据最后一个RDD回溯，获取最后一个调度阶段finalStage
+    val job = new ActiveJob(jobId, finalStage, callSite, listener, properties)
+    clearCacheLocs()
+    logInfo("Got job %s (%s) with %d output partitions".format(
+      job.jobId, callSite.shortForm, partitions.length))
+    logInfo("Final stage: " + finalStage + " (" + finalStage.name + ")")
+    logInfo("Parents of final stage: " + finalStage.parents)
+    logInfo("Missing parents: " + getMissingParentStages(finalStage))
+
+    val jobSubmissionTime = clock.getTimeMillis()
+    jobIdToActiveJob(jobId) = job
+    activeJobs += job
+    finalStage.setActiveJob(job)
+    val stageIds = jobIdToStageIds(jobId).toArray
+    val stageInfos = stageIds.flatMap(id => stageIdToStage.get(id).map(_.latestInfo))
+    listenerBus.post(
+      SparkListenerJobStart(job.jobId, jobSubmissionTime, stageInfos, properties))
+    // 提交执行
+    submitStage(finalStage)
+  }
+```
+
+在上面代码中，把finalRDD传入createResultStage方法中，接着在createResultStage方法中再将finalRDD传入 getShuffleDependenciesAndResourceProfiles方法中，生成最后一个调度阶段finalStage，代码如下：
+
+```scala
+/**
+   * Returns shuffle dependencies that are immediate parents of the given RDD and the
+   * ResourceProfiles associated with the RDDs for this stage.
+   *
+   * This function will not return more distant ancestors for shuffle dependencies. For example,
+   * if C has a shuffle dependency on B which has a shuffle dependency on A:
+   *
+   * A <-- B <-- C
+   *
+   * calling this function with rdd C will only return the B <-- C dependency.
+   *
+   * This function is scheduler-visible for the purpose of unit testing.
+   */
+  private[scheduler] def getShuffleDependenciesAndResourceProfiles(
+      rdd: RDD[_]): (HashSet[ShuffleDependency[_, _, _]], HashSet[ResourceProfile]) = {
+    // 用于存放当前RDD回溯的上一个ShuffleDependency RDD
+    val parents = new HashSet[ShuffleDependency[_, _, _]]
+    val resourceProfiles = new HashSet[ResourceProfile]
+    val visited = new HashSet[RDD[_]]
+    // 存放非ShuffleDependency的RDD
+    val waitingForVisit = new ListBuffer[RDD[_]]
+    // 最后一个RDD放入待遍历RDD列表
+    waitingForVisit += rdd
+    // 遍历处理，先对访问过的RDD标记，然后根据当前RDD所依赖的RDD操作类型不同进行不同的处理
+    while (waitingForVisit.nonEmpty) {
+      val toVisit = waitingForVisit.remove(0)
+      if (!visited(toVisit)) {
+        // 放入以遍历RDD列表
+        visited += toVisit
+        Option(toVisit.getResourceProfile).foreach(resourceProfiles += _)
+        toVisit.dependencies.foreach {
+          // 遍历直到遇到ShuffleDependency
+          case shuffleDep: ShuffleDependency[_, _, _] =>
+            parents += shuffleDep
+          case dependency =>
+            waitingForVisit.prepend(dependency.rdd)
+        }
+      }
+    }
+    (parents, resourceProfiles)
+  }
+```
+
+当finalRDD存在ShuffleDependency，需要从发生Shuffle操作的RDD往前遍历，找出所有的ShuffleMapStage。这个是调度阶段划分的最关键部分，该算法和getShuffleDependenciesAndResourceProfiles类似，由
