@@ -20,7 +20,7 @@
 
 ### 4.1.1 Spark消息通信架构
 
-Spark中定义了通信框架接口，接口实现中调用Netty的具体方法（Spark 2.0版本之后，之前使用的Akka）。在框架中以RpcEndPoint和RpcEndPointRef实现了Actor和ActorRef相关动作，其中RpcEndPointRef是RpcEndPoint的引用，它们关系如图4-2所示：
+Spark中定义了通信框架接口，接口实现中调用Netty的具体方法(Spark 2.0版本之后，之前使用的Akka)。在框架中以RpcEndPoint和RpcEndPointRef实现了Actor和ActorRef相关动作，其中RpcEndPointRef是RpcEndPoint的引用，它们关系如图4-2所示：
 
 ![](./img/4-2.jpg)
 
@@ -127,7 +127,7 @@ private def sendRegisterMessageToMaster(masterEndpoint: RpcEndpointRef): Unit = 
   }
 ```
 
-**（2）**Master收到消息后，需要对Worker发送的消息进行验证、记录。如果注册成功，则发送RegisterWorker消息给对应的Worker，告诉Worker已经完成注册，随之进行步骤3，及Worker定期发送心跳信息给Master：如果注册过程中是被，则会发送RegisterWorkerFailed消息，worker打印出错日志并结束Worker启动。
+**（2）**Master收到消息后，需要对Worker发送的消息进行验证、记录。如果注册成功，则发送RegisterWorker消息给对应的Worker，告诉Worker已经完成注册，随之进行步骤3，及Worker定期发送心跳信息给Master：如果注册过程中失败，则会发送RegisterWorkerFailed消息，worker打印出错日志并结束Worker启动。
 
 在Master中，Maste接收到Worker消息后，先判断Master当前状态是否处于STANDBY状态，如果是则忽略该消息，如果在注册列表中发现了该Worker的编号，则发送注册失败的消息。判断完毕后使用RegisterWorker方法把该Worker加入列表中，用于集群进行处理任务时进行调度。Master.receive方法中注册Worker代码实现如下所示：
 
