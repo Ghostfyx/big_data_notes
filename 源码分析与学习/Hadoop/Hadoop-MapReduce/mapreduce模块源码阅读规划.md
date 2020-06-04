@@ -11,3 +11,7 @@
 | org.apache.hadoop.mapreduce.protocol.ClientProtocol         | hadoop-mapreduce-client-core      | 2020/04/29 |
 | org.apache.hadoop.mapred.YARNRunner                         | hadoop-mapreduce-client-jobclient | 2020/04/29 |
 | org.apache.hadoop.mapred.LocalJobRunner                     | hadoop-mapreduce-client-common    | 2020/04/29 |
+
+| 日期       | 学习源码                       | 描述                   |
+| ---------- | ------------------------------ | ---------------------- |
+| 2020-06-04 | Mapper.class, MapContext.class | MapReduce Mapper类学习 |
