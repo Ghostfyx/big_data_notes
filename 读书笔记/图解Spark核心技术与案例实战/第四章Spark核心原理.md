@@ -965,3 +965,59 @@ private[scheduler] def handleJobSubmitted(jobId: Int,
 ```
 
 当finalRDD存在ShuffleDependency，需要从发生Shuffle操作的RDD往前遍历，找出所有的ShuffleMapStage。这个是调度阶段划分的最关键部分，该算法和getShuffleDependenciesAndResourceProfiles类似，由
+
+## 4.4 容错及HA
+
+所谓容错是指一个系统的部分出现错误的情况下还能持续地提供服务，不会因为一些细微的错误导致系统性能严重下降或者出现系统瘫痪。在一个集群出现机器股故障、网络问题等是常态，尤其是集群达到较大规模后，很可能比较频繁出现机器故障不能进行提供服务，因此对分布式集群进行容错设计。Spark在设计之初考虑到这样的情况，所以它能够实现高容错，以下将从Executor、Worker和Master的异常处理来介绍。
+
+### 4.4.1 Executor异常
+
+Spark支持多种运行模式，这些运行模式中的集群管理器会为任务分配运行资源，在运行资源中启动Executor，由Executor负责任务的执行，最终把任务运行状态发送给Driver，以下将以独立运行模式分析Executor出现异常的情况，其运行结构图如图4-11所示，其中虚线是正常进行消息通信线路，实线为异常处理步骤。
+
+<img src="img/4-11.jpg" style="zoom:50%;" />
+
+（1）首先看Executor的启动过程，在集群中由Master给应用程序分配运行资源后，然后在Worker中启动ExecutorRunner，而ExecutorRunner根据当前运行模式启动CoarseGrainedExecutorBackend进程，该进程会向Driver发送注册Executor信息，如果注册成功，则CoarseGrainedExecutorBackend在其内部启动Executor，Executor由ExecutorRunner进行管理，当Executor出现异常时(如所运行容器CoarseGrainedExecutorBackend进程异常退出等)，由ExecutorRunner捕获该异常并发送ExecutorStateChanged消息给Worker。
+
+（2）Worker接收到ExecutorStateChanged消息时，在Worker的handleExecutorStateChanged方法中根据Executor状态进行信息更新，同时把Executor状态信息转发给Master。
+
+（3）Master接收到Executor状态变化消息后，如果发现Executor出现异常退出，则调用Master的schedule方法，尝试获取可用的Worker节点并启动Executor，而这个Worker很可能不是失败之前运行Executor的Worker节点。该尝试系统会进行10次，如果超过10次，则标记该应用运行失败并移除集群中移除该应用。这种限定失败次数是为了避免提交的应用程序存在Bug而反复提交，进而挤占集群宝贵的资源。
+
+### 4.4.2 Worker异常
+
+Spark独立运行模式采用的是Master/Slave的结构，其中Slave是由Worker来担任的，在运行的时候会发送心跳给Master，让Master知道Worker的实时状态，另一方面Master也会检测注册的Worker是否超时，因为在集群运行过程中，可能由于机器宕机或者进程被杀死等原因造层Worker进程异常退出。下面将分析Spark集群如何处理这种情况，其处理流程如图4-12所示。
+
+<img src="img/4-12.jpg" style="zoom:50%;" />
+
+（1）这里需要了解Master是如何感知Worker超时的，在Master接收Worker心跳的同时，在其启动onstart()方法中启动检测Worker超时的线程，其代码如下：
+
+```scala
+checkForWorkerTimeOutTask = forwardMessageThread.scheduleAtFixedRate(
+      () => Utils.tryLogNonFatalError { 
+        //非自身发送消息CheckForWorkerTimeOut，调用timeOutDeadWorkers方法进行检测
+        self.send(CheckForWorkerTimeOut) 
+      },
+      0, workerTimeoutMs, TimeUnit.MILLISECONDS)
+```
+
+（2）当Worker出现超时时，Master调用timeOutDeadWorkers方法进行处理，在处理时根据Worker运行的是Executor和Driver分别进行处理。
+
+- 如果是Executor，Master先把该Worker上运行的Executor发送消息ExecutorUpdate给对应的Driver，告知Executor已经丢失，同时把这些Executor从其应用程序运行列表中删除，另外，相关Executor的异常也需要按照前一小节进行处理。
+- 如果是Driver，则判断是否设置重新启动，如果需要，则调用Master.schedule方法进行调度，分配合适节点重启Driver；如果不需要重启，则删除该应用程序。
+
+### 4.4.3 Master异常
+
+Master作为Spark独立运行模式中的核心，如果Master出现异常，则整个集群的运行情况和资源将无法进行管理，整个集群将处于“群龙无首”的情况，Spark在设计时已经考虑了这种情况，在集群运行的时候，Master将启动一个或多个Standby Master，当Master出现异常的时候，Standby Master将根据一定规则确定其中一个接管Master。在独立运行模式中，Spark支持如下几种策略，可以在配置文件spark-env.sh配置项spark.deploy.recoveryMode进行设置，默认为NONE。
+
+- ZOOKEEPER：集群的元数据持久化到Zookeeper中，当Master出现异常时，Zookeeper会通过选举机制选举出新的Master，新的Master接管时需要从Zookeeper获取持久化信息并根据这些信息恢复集群状态。具体结构如图4-13所示。
+- FILESYSTEM：集群的元数据持久化到本地文件系统中，当Master出现异常时，只要在该机器上重新启动Master，启动新的Master获取持久化信息并根据这些信息恢复集群状态。
+- CUSTOM：自定义恢复方式，对StandloneRecoveryModeFactory抽象类进行实现并把该类配置到系统中，当Master出现异常时，会根据用户自定义的方式进行恢复集群状态。
+- NONE：不持久化集群的元数据，当Master出现异常时，新启动的Master不进行恢复集群状态，而是直接接管集群。
+
+<img src="img/4-13.jpg" style="zoom:40%;" />
+
+## 4.5 监控管理
+
+Spark提供了UI监控、Spark Metrics和REST三种方式监控应用程序运行状态。其中，UI监控是以网页方式提供用户监控调度阶段、存储、运行环境和Executor参数等信息，Spark Metrics通过定制的方式，将应用程序的运行情况以多种方式展现出来，而REST则提供API给用户，通过API开发监控应用程序的各阶段信息。
+
+### 4.5.1 UI监控
+

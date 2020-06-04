@@ -13,7 +13,7 @@ private[rpc] class NettyRpcEnvFactory extends RpcEnvFactory with Logging {
     val sparkConf = config.conf
     // Use JavaSerializerInstance in multiple threads is safe. However, if we plan to support
     // KryoSerializer in future, we have to use ThreadLocal to store SerializerInstance
-    // 实例化序列化类，使用JavaSerializerInstance是线程安全的，未来会提供KryoSerializer，但是必须使用ThreadLocal存储KryoSerializer实例
+    // Spark默认的序列化实现类，使用JavaSerializerInstance是线程安全的，未来会提供KryoSerializer，但是必须使用ThreadLocal存储KryoSerializer实例
     val javaSerializerInstance =
       new JavaSerializer(sparkConf).newInstance().asInstanceOf[JavaSerializerInstance]
     // 实例化nettyEnv对象

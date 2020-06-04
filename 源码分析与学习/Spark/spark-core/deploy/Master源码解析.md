@@ -24,7 +24,9 @@ private[deploy] object Master extends Logging {
     val conf = new SparkConf
     // 对传入的master设置参数做封装
     val args = new MasterArguments(argStrings, conf)
+    // 核心方法：启动RpcEnv和Master节点的RpcEndpoint
     val (rpcEnv, _, _) = startRpcEnvAndEndpoint(args.host, args.port, args.webUiPort, conf)
+    // master JVM进程一直在等待，因此Master生命周期贯穿整个Spark集群
     rpcEnv.awaitTermination()
   }
 
@@ -40,12 +42,11 @@ private[deploy] object Master extends Logging {
       webUiPort: Int,
       conf: SparkConf): (RpcEnv, Int, Option[Int]) = {
     val securityMgr = new SecurityManager(conf)
-    // 创建Matse节点 RPC运行环境
+    // 创建 Spark RPC运行环境
     val rpcEnv = RpcEnv.create(SYSTEM_NAME, host, port, conf, securityMgr)
-    //启动master Rpc通信组件：RpcEndpoint
+    //启动master Rpc通信组件：RpcEndpoint，并注册到RpcEnv中，注册的名字是：Master，对象是new Master 
     val masterEndpoint = rpcEnv.setupEndpoint(ENDPOINT_NAME,
       //创建Master对象实例，调用onStart()方法onStart方法中主要是创建一个定时给自己发送信息的守护单线程定时器，
-      // 创建master实例，调用Master的onstart方法，然后定时发送信息，发送定时清理超时发送心跳的Woker，
       new Master(rpcEnv, rpcEnv.address, webUiPort, securityMgr, conf))
     // RpcEndpoint组件启动后， 发送消息到相应的`RpcEndpoint.receiveAndReply`(即Master给自己发送消息测试)，阻塞等待回复的结果
     val portsResponse = masterEndpoint.askSync[BoundPortsResponse](BoundPortsRequest)

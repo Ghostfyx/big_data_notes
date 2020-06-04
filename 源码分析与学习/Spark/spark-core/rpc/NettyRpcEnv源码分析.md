@@ -56,7 +56,7 @@ private[netty] class NettyRpcEnv(
 
 ### 2.1 startServer
 
-启动服务端的RpcEnv服务。
+启动NettyRpcEnv传输层服务。
 
 ```scala
 def startServer(bindAddress: String, port: Int): Unit = {
@@ -66,7 +66,8 @@ def startServer(bindAddress: String, port: Int): Unit = {
       } else {
         java.util.Collections.emptyList()
       }
-    //TransportContext 属于 spark.network 中的部分，负责 RPC 消息在网络中的传输
+    //TransportContext属于 spark.network 中的部分，负责 RPC消息在网络中的传输
+    // 创建RpcTransportServer
     server = transportContext.createServer(bindAddress, port, bootstraps)
     // 在每个 RpcEndpoint 注册的时候都会注册一个默认的 RpcEndpointVerifier，它的作用是客户端调用的时候先用它来询问 Endpoint 是否存在。
     dispatcher.registerRpcEndpoint(
