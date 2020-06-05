@@ -51,3 +51,6 @@ export PYTHONHASHSEED=0
 exec "${SPARK_HOME}"/bin/spark-class org.apache.spark.deploy.SparkSubmit "$@"
 ```
 
+## 3. Spark-submit与Spark-start-all区别
+
+Spark on YARN模式下，不需要启动Master、Worker守护进程调度资源完成Driver-Exceutor-Task计算框架的计算，因此只需要使用Spark-submit脚本提交应用，由YARN的RM与NM完成各个节点的资源管理与分配，Spark在YARN RM中申请AM(Driver)作为Spark作业的管理器，AM负责管理/调度Executor与Task。

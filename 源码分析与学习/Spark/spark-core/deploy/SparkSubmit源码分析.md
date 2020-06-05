@@ -170,8 +170,8 @@ private def submit(args: SparkSubmitArguments, uninitLog: Boolean): Unit = {
 
     def doRunMain(): Unit = {
         if (args.proxyUser != null) {
-            val proxyUser = UserGroupInformation.createProxyUser(args.proxyUser,
-                                                                 UserGroupInformation.getCurrentUser())
+            // 如果是代理用户，则使用proxyUser 对runMain()函数包装调用；
+            val proxyUser = UserGroupInformation.createProxyUser(args.proxyUser,                                                       UserGroupInformation.getCurrentUser())
             try {
                 proxyUser.doAs(new PrivilegedExceptionAction[Unit]() {
                     override def run(): Unit = {
@@ -246,7 +246,7 @@ private def submit(args: SparkSubmitArguments, uninitLog: Boolean): Unit = {
    * running cluster deploy mode or python applications.
    */
   private def runMain(args: SparkSubmitArguments, uninitLog: Boolean): Unit = {
-    // 未提交的应用程序准备环境
+    // 通过设置适当的类路径，系统属性和应用程序参数来准备启动环境，以便基于集群管理和部署模式运行子主类
     val (childArgs, childClasspath, sparkConf, childMainClass) = prepareSubmitEnvironment(args)
     // Let the main class re-initialize the logging system once it starts.
     if (uninitLog) {
@@ -279,7 +279,8 @@ private def submit(args: SparkSubmitArguments, uninitLog: Boolean): Unit = {
     var mainClass: Class[_] = null
 
     try {
-      // 通过反射机制获取Application运行主类
+       // 通过反射机制获取Application运行主类，底层调用 Class.forName(String name, boolean initialize, ClassLoader loader)
+      //  Class.forName(className, true, getContextOrSparkClassLoader) initalize= true，表示给定的类如果之前没有被初始化过，那么会被初始化
       mainClass = Utils.classForName(childMainClass)
     } catch {
       case e: ClassNotFoundException =>
@@ -381,6 +382,9 @@ private[deploy] def prepareSubmitEnvironment(
     var childMainClass = ""
 
     // Set the cluster manager 根据--master 参数确定资源管理器
+    // 设置集群管理器，
+    // 从这个列表中可以得到信息：spark目前支持的集群管理器:YARN,STANDLONE,MESOS,KUBERNETES,LOCAL，
+    // 在spark-submit参数的--master中指定。
     val clusterManager: Int = args.master match {
         case "yarn" => YARN
         case "yarn-client" | "yarn-cluster" =>
@@ -933,7 +937,12 @@ private[deploy] def prepareSubmitEnvironment(
 
 ## 3. 总结
 
-SparkSubmit提交Application是：
+SparkSubmit提交Application是调用：
+
+```java
+// childMainClass决定Application调用哪个类提交
+mainClass = Utils.classForName(childMainClass)
+```
 
 （1）当--deploy-mode:cluster且--master: yarn时，会调用YarnClusterApplication进行提交，YarnClusterApplication这是org.apache.spark.deploy.yarn.Client中的一个内部类，在YarnClusterApplication中new了一个Client对象，并调用了run方法。
 
