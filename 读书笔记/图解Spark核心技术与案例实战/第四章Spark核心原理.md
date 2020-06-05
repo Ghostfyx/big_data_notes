@@ -12,6 +12,7 @@
 	1. **Standalone：**Spark原生资源管理，由Master节点负责资源管理
 	2. **Hadoop Yarn：**由Yarn的ResourceManager负责资源的管理
 	3. **Mesos：**由Mesos中的Mesos Master负责管理
+	4. **Kubernetes**
 - **Worker(工作节点)：**集群中任何可以运行Application代码的节点。在Yarn和Spark on Yarn模式中指的是NodeManager；在Standalone中指的是通过Slave文件配置的Worker节点。
 - **Master(总控进程)：**Spark Standalone模式下的主节点，负责管理和分配集群资源来运行Spark Application。
 - **Executor(执行进程)：**Aplication运行在Worker节点上的一个进程，该进程负责从线程池中抽取空余线程运行Task，Task并行的数量取决于分配给Executor进程的CPU数量。最终Executor将结果写入内存或磁盘中，每个Application都独立拥有一批Executor。
