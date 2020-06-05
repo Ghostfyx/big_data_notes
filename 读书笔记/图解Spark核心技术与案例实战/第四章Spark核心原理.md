@@ -1001,7 +1001,7 @@ checkForWorkerTimeOutTask = forwardMessageThread.scheduleAtFixedRate(
 
 （2）当Worker出现超时时，Master调用timeOutDeadWorkers方法进行处理，在处理时根据Worker运行的是Executor和Driver分别进行处理。
 
-- 如果是Executor，Master先把该Worker上运行的Executor发送消息ExecutorUpdate给对应的Driver，告知Executor已经丢失，同时把这些Executor从其应用程序运行列表中删除，另外，相关Executor的异常也需要按照前一小节进行处理。
+- 如果是Executor，Master先把该Worker上运行的Executor发送消息ExecutorUpdate给对应的Driver，告知Executor已经丢失，同时把这些Executor从其应用程序运行列表中删除，另外，相关Executor的异常也需要按照前一小节进行处理(在其他Worker节点上启动Executor，再将异常Worker上的Executor中的任务调度至新的Executor)。
 - 如果是Driver，则判断是否设置重新启动，如果需要，则调用Master.schedule方法进行调度，分配合适节点重启Driver；如果不需要重启，则删除该应用程序。
 
 ### 4.4.3 Master异常
