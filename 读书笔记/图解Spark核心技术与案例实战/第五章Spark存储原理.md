@@ -62,3 +62,95 @@ val blockManager = new BlockManager(
   externalShuffleClient)
 ```
 
+其中BlockManager初始化代码如下，如果是Executor创建其消息通信的终端点BlockManagerslaveEndpoint，并向Driver端发送RegisterBlockManager消息，把该Executor的BlockManager和其所包含的BlockManagerslaveEndpoint引用注册到BlockManagerMaster中。
+
+```scala
+/**
+   * Initializes the BlockManager with the given appId. This is not performed in the constructor as
+   * the appId may not be known at BlockManager instantiation time (in particular for the driver,
+   * where it is only learned after registration with the TaskScheduler).
+   *
+   * This method initializes the BlockTransferService and BlockStoreClient, registers with the
+   * BlockManagerMaster, starts the BlockManagerWorker endpoint, and registers with a local shuffle
+   * service if configured.
+   */
+  def initialize(appId: String): Unit = {
+    // 在Executor中启动远程数据传输服务，根据配置启动传输服务器BlockTransferServicer，
+    // 该服务器启动后等待其他节点发送请求消息
+    blockTransferService.init(this)
+    externalBlockStoreClient.foreach { blockStoreClient =>
+      blockStoreClient.init(appId)
+    }
+    blockReplicationPolicy = {
+      val priorityClass = conf.get(config.STORAGE_REPLICATION_POLICY)
+      val clazz = Utils.classForName(priorityClass)
+      val ret = clazz.getConstructor().newInstance().asInstanceOf[BlockReplicationPolicy]
+      logInfo(s"Using $priorityClass for block replication policy")
+      ret
+    }
+
+    //获取BlockManager ID
+    val id =
+      BlockManagerId(executorId, blockTransferService.hostName, blockTransferService.port, None)
+
+    // 把Executor的BlockManager注册到BlockManagerMaster中，其中包括其终端点
+    // BlockManagerSlaveEndpoint的引用，Master端持有该引用可以向Executor发送消息
+    val idFromMaster = master.registerBlockManager(
+      id,
+      diskBlockManager.localDirsString,
+      maxOnHeapMemory,
+      maxOffHeapMemory,
+      slaveEndpoint)
+
+    blockManagerId = if (idFromMaster != null) idFromMaster else id
+
+    // 获取Shuffle服务ID，如果启动外部Shuffle服务，则加入外部Shuffle服务端口信息
+    // 否则使用BlockManager编号
+    shuffleServerId = if (externalShuffleServiceEnabled) {
+      logInfo(s"external shuffle service port = $externalShuffleServicePort")
+      BlockManagerId(executorId, blockTransferService.hostName, externalShuffleServicePort)
+    } else {
+      blockManagerId
+    }
+
+    // Register Executors' configuration with the local shuffle service, if one should exist.
+    // 如果外部Shuffle服务启动并且为Executor节点，则注册该外部Shuffle服务
+    if (externalShuffleServiceEnabled && !blockManagerId.isDriver) {
+      registerWithExternalShuffleServer()
+    }
+
+    hostLocalDirManager =
+      if (conf.get(config.SHUFFLE_HOST_LOCAL_DISK_READING_ENABLED) &&
+          !conf.get(config.SHUFFLE_USE_OLD_FETCH_PROTOCOL)) {
+        externalBlockStoreClient.map { blockStoreClient =>
+          new HostLocalDirManager(
+            futureExecutionContext,
+            conf.get(config.STORAGE_LOCAL_DISK_BY_EXECUTORS_CACHE_SIZE),
+            blockStoreClient,
+            blockManagerId.host,
+            externalShuffleServicePort)
+        }
+      } else {
+        None
+      }
+
+    logInfo(s"Initialized BlockManager: $blockManagerId")
+  }
+```
+
+（2）当写入、更新或删除数据完毕后，发送数据块的最新状态消息UpdateBlockInfo给BlockManagerMasterEndpoint终端点，由其更新数据块的元数据。该终端点的元数据存放在BlockManagerMasterEndpoint的3个HashMap中，分别如下：
+
+```scala
+// Mapping from executor ID to block manager ID.
+// 存放了ExecutorID和BlockManagerId对应列表
+private val blockManagerIdByExecutor = new mutable.HashMap[String, BlockManagerId]
+
+// Mapping from block id to the set of block managers that have the block.
+// 存放了BlockId和BlockManagerId序列所对应的列表，原因在于同一个数据可能存在多个副本，保存在多个
+// Executor中
+private val blockLocations = new JHashMap[BlockId, mutable.HashSet[BlockManagerId]]
+
+// 属于BlockManagerMasterEndpoint构造函数的参数
+blockManagerInfo: mutable.Map[BlockManagerId, BlockManagerInfo]
+```
+
