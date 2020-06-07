@@ -1022,3 +1022,78 @@ Spark提供了UI监控、Spark Metrics和REST三种方式监控应用程序运�
 
 ### 4.5.1 UI监控
 
+Spark的UI监控分为实时监控和历史UI监控两种方式，默认情况下启用实时UI监控，历史UI监控需要手动启用。在实时UI监控页面中可以即时刷新查看作业的运行情况，而历史UI监控则是保存了应用程序的运行状态数据，根据用户需要可以查询这些应用历史运行情况。
+
+#### 1. 实时UI监控
+
+实时UI监控为了Master UI监控和应用程序UI监控，其中Master UI监控在Master启动过程中启用，而应用程序UI监控在SparkContext启用。以Standalone为例，在Master启用的时候会启用UI监控和REST服务，Master UI监控默认使用8080端口。同时启用Master和应用程序的Metrics服务，具体代码在Master的onStart方法中。
+
+```scala
+override def onStart(): Unit = {
+    logInfo("Starting Spark master at " + masterUrl)
+    logInfo(s"Running Spark version ${org.apache.spark.SPARK_VERSION}")
+    // 启动Master的UI监控页面，其中HTTP服务由Jetty进行提供
+    webUi = new MasterWebUI(this, webUiPort)
+    // 默认使用8080端口
+    webUi.bind()
+    masterWebUiUrl = s"${webUi.scheme}$masterPublicAddress:${webUi.boundPort}"
+    if (reverseProxy) {
+      masterWebUiUrl = conf.get(UI_REVERSE_PROXY_URL).orElse(Some(masterWebUiUrl)).get
+      webUi.addProxy()
+      logInfo(s"Spark Master is acting as a reverse proxy. Master, Workers and " +
+       s"Applications UIs are available at $masterWebUiUrl")
+    }
+    checkForWorkerTimeOutTask = forwardMessageThread.scheduleAtFixedRate(
+      () => Utils.tryLogNonFatalError { self.send(CheckForWorkerTimeOut) },
+      0, workerTimeoutMs, TimeUnit.MILLISECONDS)
+    
+    // 启用REST服务，默认端口为6066
+    if (restServerEnabled) {
+      val port = conf.get(MASTER_REST_SERVER_PORT)
+      restServer = Some(new StandaloneRestServer(address.host, port, conf, self, masterUrl))
+    }
+    restServerBoundPort = restServer.map(_.start())
+
+    masterMetricsSystem.registerSource(masterSource)
+    masterMetricsSystem.start()
+    applicationMetricsSystem.start()
+    // Attach the master and app metrics servlet handler to the web ui after the metrics systems are
+    // started.
+    // 启用Master和应用程序的Metrics服务，把Master UI的监控句柄注入到Master和应用程序的Metrics服务中，
+    // 这样Master监控信息会同时发送到Master和应用程序的Metrics中
+    masterMetricsSystem.getServletHandlers.foreach(webUi.attachHandler)
+    applicationMetricsSystem.getServletHandlers.foreach(webUi.attachHandler)
+```
+
+在Master UI监控页面上有以下4部分内容，界面如图4-14所示：
+
+- Master概要信息
+- 集群的Worker列表
+- 正在运行的应用程序
+- 完成运行的应用程序
+
+而SparkContext启动时，启用应用程序的UI监控界面，默认端口为4040，访问地址为http://host:4040，启动代码在SparkContext的初始化过程中。
+
+```scala
+ _ui =
+      // 默认情况下启动应用程序的UI监控，在监控过程中加入把作业处理监听器JobProgressListener
+      // 注入到消息总线ListenerBus中，用于监控作业处理状态
+      if (conf.get(UI_ENABLED)) {
+        Some(SparkUI.create(Some(this), _statusStore, _conf, _env.securityManager, appName, "",
+          startTime))
+      } else {
+        // For tests, do not enable the UI
+        None
+      }
+    // Bind the UI before starting the task scheduler to communicate
+    // the bound port to the cluster manager properly
+    // 如果端口被占用就会逐步递增，默认端口是4040
+    _ui.foreach(_.bind())
+```
+
+应用程序的UI监控一般包括作业、调度阶段、存储、运行环境、Executor和SQL等信息。在Spark Streaming中会增加Streaming监控信息。在Spark1.4版本中，UI监控加入了数据可视化功能，增加了事件时间轴，执行DAG和Spark Streaming统计3个视图。
+
+（1）作业监控页面
+
+​	在监控页面中显示了作业的运行情况，内容包括作业的概要信息、事件时间轴视图、正在运行的作业和已运行成功的作业等信息。
+
