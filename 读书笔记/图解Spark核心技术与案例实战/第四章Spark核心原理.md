@@ -920,9 +920,31 @@ private[scheduler] def handleJobSubmitted(jobId: Int,
   }
 ```
 
-在上面代码中，把finalRDD传入createResultStage方法中，接着在createResultStage方法中再将finalRDD传入 getShuffleDependenciesAndResourceProfiles方法中，生成最后一个调度阶段finalStage，代码如下：
+在上面代码中，把finalRDD传入createResultStage方法中，接着在createResultStage方法中再将finalRDD传入 getShuffleDependenciesAndResourceProfiles方法中，获取finalRDD最近直系Shuffle父依赖，代码如下：
 
 ```scala
+/**
+   * Create a ResultStage associated with the provided jobId.
+   */
+private def createResultStage(
+  rdd: RDD[_],
+  func: (TaskContext, Iterator[_]) => _,
+  partitions: Array[Int],
+  jobId: Int,
+  callSite: CallSite): ResultStage = {
+  val (shuffleDeps, resourceProfiles) = getShuffleDependenciesAndResourceProfiles(rdd)
+  val resourceProfile = mergeResourceProfilesForStage(resourceProfiles)
+  checkBarrierStageWithDynamicAllocation(rdd)
+  checkBarrierStageWithNumSlots(rdd, resourceProfile)
+  checkBarrierStageWithRDDChainPattern(rdd, partitions.toSet.size)
+  val parents = getOrCreateParentStages(shuffleDeps, jobId)
+  val id = nextStageId.getAndIncrement()
+  val stage = new ResultStage(id, rdd, func, partitions, parents, jobId,
+                              callSite, resourceProfile.id)
+  stageIdToStage(id) = stage
+  updateJobIdStageIdMaps(jobId, stage)
+  stage
+}
 
 
 /**
@@ -968,7 +990,77 @@ private[scheduler] def handleJobSubmitted(jobId: Int,
   }
 ```
 
-当finalRDD存在ShuffleDependency，需要从发生Shuffle操作的RDD往前遍历，找出所有的ShuffleMapStage。这个是调度阶段划分的最关键部分，该算法和getShuffleDependenciesAndResourceProfiles类似，由
+当finalRDD存在ShuffleDependency，需要从发生Shuffle操作的RDD往前遍历，找出所有的ShuffleMapStage。这个是调度阶段划分的最关键部分，该算法和getShuffleDependenciesAndResourceProfiles类似，由getOrCreateParentStages实现，在该方法中找出所有操作类型是宽依赖的RDD，然后通过getOrCreateShuffleMapStage创建ShuffleMapStage：
+
+```scala
+/**
+   * Get or create the list of parent stages for the given shuffle dependencies. The new
+   * Stages will be created with the provided firstJobId.
+   */
+private def getOrCreateParentStages(shuffleDeps: HashSet[ShuffleDependency[_, _, _]],
+                                    firstJobId: Int): List[Stage] = {
+  shuffleDeps.map { shuffleDep =>
+    getOrCreateShuffleMapStage(shuffleDep, firstJobId)
+  }.toList
+}
+```
+
+当所有调度阶段划分完毕时，这些调度阶段建立起依赖关系，该依赖关系是通过调度阶段其中属性parents:List[Stage]来定义的，通过该属性可以获取当前阶段所有阶段，可以根据这些信息按顺序提交调度阶段进行运行。
+
+调度阶段的划分是Spark执行作业的重要部分，将以图4-7为例讲解作业的划分。在图中一共有7个RDD，分别是rddA～rddG，它们之间有5个操作，其划分调度阶段的详细步骤如下：
+
+ <img src="img/4-7.jpg" style="zoom:30%;" />
+
+（1）在SparkContext提交运行时，会调用DAGScheduler的handleJobSubmitted方法进行处理，在该方法中会根据最后一个RDD，即rddG，会调用createResultStage创建finalStage: ResultStage；
+
+（2）在getShuffleDependenciesAndResourceProfiles方法中判断rddG所依赖的RDD树中是否存在shuffle操作，该例子发现join操作为Shuffle操作，则获取进行该操作的RDD为rddB和rddF。
+
+（3）使用getOrCreateParentStages方法对rddG Shuffle依赖的RDD进行遍历操作，以生成调度阶段；
+
+（4）调用getOrCreateShuffleMapStage方法从rddB向前遍历，发现该依赖分支上没有其他shuffleDependcy，生成调度阶段ShuffleMapStage0；
+
+（5）使用getOrCreateShuffleMapStage方法从rddF向前遍历，寻找该依赖存在宽依赖操作groupBy，以此为分界划分rddD和rddE为ShuffleMapStage1，rddE和rddF为ShuffleMapStage2。
+
+（6）最后生成rddG的ResultStage3，在该划分调度阶段中，共划分4个调度阶段。
+
+### 4.2.4 提交调度阶段
+
+在DAGScheduler的handleJobSubmitted方法中，生成finalStage的同时建立起所有调度阶段的依赖关系，然后通过finalStage生成一个作业实例，在该作业实例中按照顺序提交调度阶段进行执行，在执行过程中通过监听总线获取作业、阶段执行情况。
+
+在作业提交阶段开始时，在submitStage方法中调用getMissingParentStages方法获取finalStage父调度阶段，如果不存在父调度阶段，则使用submitMissingTasks方法提交执行；如果存在父调度阶段，则把该调度阶段放到waitingStages列表中，同时递归调用submitStage，通过该算法把存在父调度阶段的等待调度阶段放入列表waitingStages中，不存在父调度阶段的调度阶段作为作业运行的入口：
+
+```scala
+/** Submits stage, but first recursively submits any missing parents. */
+private def submitStage(stage: Stage): Unit = {
+  val jobId = activeJobForStage(stage)
+  if (jobId.isDefined) {
+    logDebug(s"submitStage($stage (name=${stage.name};" +
+             s"jobs=${stage.jobIds.toSeq.sorted.mkString(",")}))")
+    if (!waitingStages(stage) && !runningStages(stage) && !failedStages(stage)) {
+      // 在该方法中，获取调度阶段的父阶段总数，获取方法是通过RDD的依赖关系向前遍历看是否存在
+      // shuffle操作，这里并没有使用调度阶段的依赖关系进行获取
+      val missing = getMissingParentStages(stage).sortBy(_.id)
+      logDebug("missing: " + missing)
+      if (missing.isEmpty) {
+        // 如果不存在父调度阶段，直接把该调度阶段提交执行
+        logInfo("Submitting " + stage + " (" + stage.rdd + "), which has no missing parents")
+        submitMissingTasks(stage, jobId.get)
+      } else {
+        for (parent <- missing) {
+          // 递归调用
+          submitStage(parent)
+        }
+        // 最早的调度阶段在HashSet的末尾
+        waitingStages += stage
+      }
+    }
+  } else {
+    abortStage(stage, "No active job for stage " + stage.id, None)
+  }
+}
+```
+
+当入口的调度阶段运行完成口相继提交后续调度阶段，在调度前先判断该调度阶段所依赖的父调度阶段的结果是否可用(即是否运行成功)，如果结果都可用，则提交该调度阶段：
 
 ## 4.4 容错及HA
 
