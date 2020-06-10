@@ -457,3 +457,111 @@ _executorAllocationManager.foreach { e =>
 SparkContext.setActiveContext(this, allowMultipleContexts)
 ```
 
+## 3. SparkContext 提交运行Job
+
+### 3.1 runJob方法
+
+SparkContext的runJob方法，其中调用了多层runJob方法。
+
+```scala
+/**
+   * Run a job on all partitions in an RDD and return the results in an array.
+   *
+   * 在RDD中的所有分区上运行作业，然后将结果返回到数组中。
+   *
+   * @param rdd target RDD to run tasks on
+   * @param func a function to run on each partition of the RDD
+   * @return in-memory collection with a result of the job (each collection element will contain
+   * a result from one partition)
+   */
+def runJob[T, U: ClassTag](rdd: RDD[T], func: Iterator[T] => U): Array[U] = {
+    runJob(rdd, func, 0 until rdd.partitions.length)
+}
+```
+
+第一层runJob
+
+```scala
+/**
+   * Run a function on a given set of partitions in an RDD and return the results as an array.
+   *
+   * @param rdd target RDD to run tasks on
+   * @param func a function to run on each partition of the RDD
+   * @param partitions set of partitions to run on; some jobs may not want to compute on all
+   * partitions of the target RDD, e.g. for operations like `first()`
+   * @return in-memory collection with a result of the job (each collection element will contain
+   * a result from one partition)
+   */
+def runJob[T, U: ClassTag](
+    rdd: RDD[T],
+    func: Iterator[T] => U,
+    partitions: Seq[Int]): Array[U] = {
+    val cleanedFunc = clean(func)
+    runJob(rdd, (ctx: TaskContext, it: Iterator[T]) => cleanedFunc(it), partitions)
+}
+```
+
+第二层runJob
+
+```scala
+/**
+   * Run a function on a given set of partitions in an RDD and return the results as an array.
+   * The function that is run against each partition additionally takes `TaskContext` argument.
+   *
+   * 针对每个分区运行的函数还带有`TaskContext`参数。
+   * @param rdd target RDD to run tasks on
+   * @param func a function to run on each partition of the RDD
+   * @param partitions set of partitions to run on; some jobs may not want to compute on all
+   * partitions of the target RDD, e.g. for operations like `first()`
+   * @return in-memory collection with a result of the job (each collection element will contain
+   * a result from one partition)
+   */
+def runJob[T, U: ClassTag](
+    rdd: RDD[T],
+    func: (TaskContext, Iterator[T]) => U,
+    partitions: Seq[Int]): Array[U] = {
+    val results = new Array[U](partitions.size)
+    // 针对每个分区运行的函数还带有`TaskContext`参数。
+    runJob[T, U](rdd, func, partitions, (index, res) => results(index) = res)
+    results
+}
+```
+
+第三层runJob，底层调用DAGScheduler的runJob方法
+
+```scala
+/**
+   * Run a function on a given set of partitions in an RDD and pass the results to the given
+   * handler function. This is the main entry point for all actions in Spark.
+   *
+   * 在一个RDD的给定分区上运行function，将结果传递给handler function，这是Spark中所有动作的主要切入点
+   *
+   * @param rdd target RDD to run tasks on
+   * @param func a function to run on each partition of the RDD
+   * @param partitions set of partitions to run on; some jobs may not want to compute on all
+   * partitions of the target RDD, e.g. for operations like `first()`
+   * @param resultHandler callback to pass each result to
+   */
+def runJob[T, U: ClassTag](
+    rdd: RDD[T],
+    func: (TaskContext, Iterator[T]) => U,
+    partitions: Seq[Int],
+    resultHandler: (Int, U) => Unit): Unit = {
+    if (stopped.get()) {
+        throw new IllegalStateException("SparkContext has been shutdown")
+    }
+    val callSite = getCallSite
+    // 清理SparkContext，使其可以序列化并发送给任务
+    val cleanedFunc = clean(func)
+    logInfo("Starting job: " + callSite.shortForm)
+    if (conf.getBoolean("spark.logLineage", false)) {
+        logInfo("RDD's recursive dependencies:\n" + rdd.toDebugString)
+    }
+    // 启动dagScheduler，在SparkContext初始化时就已经构建了DAGScheduler
+    dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
+    // 进度条
+    progressBar.foreach(_.finishAll())
+    rdd.doCheckpoint()
+}
+```
+

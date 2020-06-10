@@ -912,6 +912,7 @@ private[scheduler] def handleJobSubmitted(jobId: Int,
     finalStage.setActiveJob(job)
     val stageIds = jobIdToStageIds(jobId).toArray
     val stageInfos = stageIds.flatMap(id => stageIdToStage.get(id).map(_.latestInfo))
+    // 向LiveListenerBus发送Job提交事件
     listenerBus.post(
       SparkListenerJobStart(job.jobId, jobSubmissionTime, stageInfos, properties))
     // 提交执行
@@ -922,6 +923,8 @@ private[scheduler] def handleJobSubmitted(jobId: Int,
 在上面代码中，把finalRDD传入createResultStage方法中，接着在createResultStage方法中再将finalRDD传入 getShuffleDependenciesAndResourceProfiles方法中，生成最后一个调度阶段finalStage，代码如下：
 
 ```scala
+
+
 /**
    * Returns shuffle dependencies that are immediate parents of the given RDD and the
    * ResourceProfiles associated with the RDDs for this stage.
