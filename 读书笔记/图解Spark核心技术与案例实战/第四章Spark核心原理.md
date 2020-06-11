@@ -1060,7 +1060,90 @@ private def submitStage(stage: Stage): Unit = {
 }
 ```
 
-当入口的调度阶段运行完成口相继提交后续调度阶段，在调度前先判断该调度阶段所依赖的父调度阶段的结果是否可用(即是否运行成功)，如果结果都可用，则提交该调度阶段：
+当入口的调度阶段运行完成口相继提交后续调度阶段，在调度前先判断该调度阶段所依赖的父调度阶段的结果是否可用(即是否运行成功)，如果结果都可用，则提交该调度阶段；如果存在不可用的情况，则尝试提交结果不可用的父调用阶段。对于调度阶段是否可用的判断是在ShuffleMapTask完成时进行，DAGScheduler会检查调度阶段的所有任务是否都完成了。如果存在执行失败的任务，则重新提交该调度阶段；如果所有任务完成，则扫描等待运行调度阶段列表，检查它们的父调度阶段是否存在未完成，如果不存在则表明该调度阶段准备就绪，生成实例并提交运行。代码参见DAGScheduler的handleTaskCompletion方法。该方法是在Executor.run方法执行完成时发送消息，通知DAGScheduler等调度器更新状态。具体实现如下：
+
+```scala
+case smt: ShuffleMapTask =>
+val shuffleStage = stage.asInstanceOf[ShuffleMapStage]
+shuffleStage.pendingPartitions -= task.partitionId
+val status = event.result.asInstanceOf[MapStatus]
+val execId = status.location.executorId
+logDebug("ShuffleMapTask finished on " + execId)
+if (failedEpoch.contains(execId) && smt.epoch <= failedEpoch(execId)) {
+  logInfo(s"Ignoring possibly bogus $smt completion from executor $execId")
+} else {
+  // The epoch of the task is acceptable (i.e., the task was launched after the most
+  // recent failure we're aware of for the executor), so mark the task's output as
+  // available.
+  mapOutputTracker.registerMapOutput(
+    shuffleStage.shuffleDep.shuffleId, smt.partitionId, status)
+}
+
+// 如果当前调度阶段在运行调度阶段列表中，并且没有任务处于刮起状态
+// 则标记该调度阶段已经完成注册输出结果的位置
+if (runningStages.contains(shuffleStage) && shuffleStage.pendingPartitions.isEmpty) {
+  markStageAsFinished(shuffleStage)
+  logInfo("looking for newly runnable stages")
+  logInfo("running: " + runningStages)
+  logInfo("waiting: " + waitingStages)
+  logInfo("failed: " + failedStages)
+
+  // This call to increment the epoch may not be strictly necessary, but it is retained
+  // for now in order to minimize the changes in behavior from an earlier version of the
+  // code. This existing behavior of always incrementing the epoch following any
+  // successful shuffle map stage completion may have benefits by causing unneeded
+  // cached map outputs to be cleaned up earlier on executors. In the future we can
+  // consider removing this call, but this will require some extra investigation.
+  // See https://github.com/apache/spark/pull/17955/files#r117385673 for more details.
+  mapOutputTracker.incrementEpoch()
+
+  clearCacheLocs()
+
+  if (!shuffleStage.isAvailable) {
+    // Some tasks had failed; let's resubmit this shuffleStage.
+    // TODO: Lower-level scheduler should also deal with this
+    logInfo("Resubmitting " + shuffleStage + " (" + shuffleStage.name +
+            ") because some of its tasks had failed: " +
+            shuffleStage.findMissingPartitions().mkString(", "))
+    // 如果调度阶段中存在部分任务执行失败，则重新提交运行
+    submitStage(shuffleStage)
+  } else {
+    // 当该调度阶段中没有等待运行的任务，则设置该调度阶段为完成
+    markMapStageJobsAsFinished(shuffleStage)
+    submitWaitingChildStages(shuffleStage)
+  }
+}
+```
+
+在前一节例子中对作业划分调度阶段，在本节中将按顺序提交调度阶段运行，具体方法步骤如4-8所示。
+
+<img src="img/4-8.jpg" style="zoom:50%;" />
+
+（1）在handleJobSubmit方法中获取了该例子最后一个调度阶段ResultStage3，通过submitStage方法提交运行该调度阶段；
+
+（2）在submitStage方法中，先创建作业实例，然后判断该调度阶段是否存在父调度阶段，由于ResultStage有两个父调度阶段ShuffleMapStage0和ShuffleMapStage2，所以并不能立即提交调度Stage运行，把ResultStage3加入到等待执行调度阶段列表waitingStages中；
+
+（3）递归调用submitStage方法可以知道ShuffleMapStage0不存在父调度阶段，而ShuffleMapStage2存在父调度阶段ShuffleMapStage1，这样ShuffleMapStage2加入等待执行调度阶段列表waitingStages中，而ShuffleMapStage0和ShuffleMapStage1两个调度阶段作为第一次调度使用submitMissingTask方法提交运行；
+
+（4）Executor任务执行完成时发送消息，通知DAGScheduler等待调度器更新状态时，检查调度阶段运行情况，如果存在执行失败的Task，则重新提交该调度阶段；如果所有任务完成，则继续提交调度阶段运行。由于ResultStage3的父调度阶段没有全部完成，在第二次调度只提交ShuffleMapStage2运行；
+
+（5）当ShuffleMapStage2运行完毕后，此时ResultStage3的父调度阶段全部完成，提交该调度阶段运行。
+
+### 4.2.5 提交任务
+
+当调度阶段提交运行后，在DAGScheduler的submitMissingTask方法中，会根据调度阶段的Partition个数拆分对应个数任务，这些任务组成任务集提交到TaskScheduler进行处理。对于ResultStage(作业中最后的调度阶段)生成ResultTask，对于ShuffleMapStage生成ShuffleMapTask。对于每一个任务集包含了对应调度阶段的所有任务，这些任务处理逻辑完全一样，不同的是对应处理的数据，而这些数据是其对应的数据分片(Partition)。DAGScheduler的submitMissingTask方法如下：
+
+```scala
+
+```
+
+当TaskShcheduler收到发送过来的任务集时，在submitTasks方法中构建一个TaskSetManager，用于管理这个任务集的生命周期，该TaskSetManager会放入系统调度池中，根据系统设置的调度算法进行调度，TaskShchedulerImpl.submitTasks方法如下：
+
+```scala
+
+```
+
+
 
 ## 4.4 容错及HA
 
