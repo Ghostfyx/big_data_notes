@@ -3,6 +3,7 @@
 为了处理事件时间，流式传输程序需要相应地设置时间特征。
 
 ```java
+// 设置为事件时间
 final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 ```
@@ -13,10 +14,10 @@ env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 
 时间戳分配伴随着生成水印，水印告诉系统事件时间的进展。有两种方式分配时间戳和生产水印：
 
-1. 直接在数据源生成；
+1. 直接在数据源生成
 2. 通过时间戳分配器/水印生成器：在Flink中，时间戳分配器还定义要发送的水印
 
-注意：时间戳和水印都被指定为自1970-01-01T00：00：00Z的Java纪元以来的毫秒。
+注意：时间戳和水印都被指定为自1970-01-01T00:00:00Z的Java纪元以来的毫秒。
 
 ## 2. Source Functions with Timestamps and Watermarks
 
