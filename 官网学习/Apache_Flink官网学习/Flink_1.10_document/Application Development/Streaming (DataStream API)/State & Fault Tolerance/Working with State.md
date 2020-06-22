@@ -20,7 +20,7 @@ Keyed stated被进一步组成Key Groups。Key Groups是Flink可以重新分配K
 
 ## 2. Raw State 与 Managed State
 
-Keyed State和Operator State 分别有两种存在形式：*managed* and *raw*.
+Keyed State和Operator State 分别有两种存在形式：managed and raw.
 
 Managed State 由 Flink 运行时控制的数据结构表示，比如内部的 hash table 或者 RocksDB。 比如 “ValueState”, “ListState” 等。Flink 运行时会对这些状态进行编码并写入 checkpoint。
 
