@@ -1143,7 +1143,141 @@ if (runningStages.contains(shuffleStage) && shuffleStage.pendingPartitions.isEmp
 
 ```
 
+在前一节例子中按顺序提交调度阶段，在本节中对这些调度阶段拆分成任务集，然后对这些任务分配资源，并提交Executor运行，具体步骤如图4-9所示。
 
+<img src="img/4-9.jpg" style="zoom: 50%;" />
+
+​																			**图4-9 提交调度阶段任务运行顺序**
+
+（1）在提交调度阶段中，第一次调度的是ShuffleMapStage0和ShuffleMapStage1，这两个调度阶段在DAGScheduler的submitMissingTask方法中，会根据Partition个数拆分任务。由于这两个调度阶段分别有两个分片，ShuffleMapStage0分别拆分成ShuffleMapStage(0, 0)和ShuffleMapStage(0,1)两个任务，这两个任务组成任务集TaskSet0，而ShuffleMapStage1分别拆分成ShuffleMapStage(1, 0)和ShuffleMapStage(1, 1)两个任务，这两个任务组成任务集TaskSet。
+
+（2）TaskScheduler接收发送过来的任务集TaskSet0和TaskSet1，在submitTasks方法中分别构建TaskSetManager的实例TaskSetManager0和TaskSetManager1进行管理，这两个TaskSetManager放到系统的调度池中，根据系统设置的调度算法进行调度。
+
+（3）在TaskSchedulerImpl的resourceOffers方法中按照就近原则进行资源分配，到该步骤每个任务平均分配运行代码、数据分片和处理资源等，使用CoarseGrainedSchedulerBackend的launchTasks方法把任务发送到Worker阶段上的CoarseGrainedSchedulerBackend调用其Executor来执行任务。
+
+（4）当ShuffleMapStage0和ShuffleMapStage1执行完毕后，随后的ShuffleMapStage2和ShuffleMapStage3会按照步骤1～3运行，不同的是，ResultStage3生成的任务类型是ResultTask。
+
+### 4.2.6 执行任务
+
+当CoarseGrainedSchedulerBackend接收到LaunchTask消息时，会调用Executor的launchTask方法进行处理。Executor的launchTask方法中，初始化一个TaskRunner来封装任务，它用于管理任务运行时的细节，再把TaskRunner对象放入到ThreadPool(线程池)中去执行。
+
+在TaskRunner中的run方法里，首先会对发送过来的Task本身以及它所依赖的Jar等文件反序列化，然后对反序列化的任务调用Task的runTask方法。由于Task本身是一个抽象类，具体的runTask方法是由它的两个子类ShuffleMapTask和ResultTask来实现的。
+
+```scala
+   override def run(): Unit = {
+
+      setMDCForTask(taskName, mdcProperties)
+
+      threadId = Thread.currentThread.getId
+      Thread.currentThread.setName(threadName)
+      val threadMXBean = ManagementFactory.getThreadMXBean
+      // 生成任务内存管理器TaskMemoryManager实例，用于任务运行期间的内存管理
+      val taskMemoryManager = new TaskMemoryManager(env.memoryManager, taskId)
+      val deserializeStartTimeNs = System.nanoTime()
+      val deserializeStartCpuTime = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
+        threadMXBean.getCurrentThreadCpuTime
+      } else 0L
+      Thread.currentThread.setContextClassLoader(replClassLoader)
+      val ser = env.closureSerializer.newInstance()
+      logInfo(s"Running $taskName (TID $taskId)")
+      // 向Driver endpoint发送任务运行开始消息
+      execBackend.statusUpdate(taskId, TaskState.RUNNING, EMPTY_BYTE_BUFFER)
+      var taskStartTimeNs: Long = 0
+      var taskStartCpu: Long = 0
+      startGCTime = computeTotalGcTime()
+      var taskStarted: Boolean = false
+
+      try {
+        // Must be set before updateDependencies() is called, in case fetching dependencies
+        // requires access to properties contained within (e.g. for access control).
+        Executor.taskDeserializationProps.set(taskDescription.properties)
+
+        // 对任务运行时需要的文件、Jar包、代码等反序列化
+        updateDependencies(taskDescription.addedFiles, taskDescription.addedJars)
+        task = ser.deserialize[Task[Any]](
+          taskDescription.serializedTask, Thread.currentThread.getContextClassLoader)
+        task.localProperties = taskDescription.properties
+        task.setTaskMemoryManager(taskMemoryManager)
+
+        // If this task has been killed before we deserialized it, let's quit now. Otherwise,
+        // continue executing the task.
+        val killReason = reasonIfKilled
+        // 任务在反序列化之前被杀死，抛出异常并退出
+        if (killReason.isDefined) {
+          // Throw an exception rather than returning, because returning within a try{} block
+          // causes a NonLocalReturnControl exception to be thrown. The NonLocalReturnControl
+          // exception will be caught by the catch block, leading to an incorrect ExceptionFailure
+          // for the task.
+          throw new TaskKilledException(killReason.get)
+        }
+
+        // The purpose of updating the epoch here is to invalidate executor map output status cache
+        // in case FetchFailures have occurred. In local mode `env.mapOutputTracker` will be
+        // MapOutputTrackerMaster and its cache invalidation is not based on epoch numbers so
+        // we don't need to make any special calls here.
+        if (!isLocal) {
+          logDebug("Task " + taskId + "'s epoch is " + task.epoch)
+          env.mapOutputTracker.asInstanceOf[MapOutputTrackerWorker].updateEpoch(task.epoch)
+        }
+
+        metricsPoller.onTaskStart(taskId, task.stageId, task.stageAttemptId)
+        taskStarted = true
+
+        // Run the actual task and measure its runtime.
+        taskStartTimeNs = System.nanoTime()
+        taskStartCpu = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
+          threadMXBean.getCurrentThreadCpuTime
+        } else 0L
+        var threwException = true
+        // 调用Task的runTask方法，由于Task本身时一个抽象类，具体的Task方法是由它的两个子类
+        // ShuffleMapTask和ResultTask实现的
+        val value = Utils.tryWithSafeFinally {
+          val res = task.run(
+            taskAttemptId = taskId,
+            attemptNumber = taskDescription.attemptNumber,
+            metricsSystem = env.metricsSystem,
+            resources = taskDescription.resources)
+          threwException = false
+          res
+         
+          ...
+        }
+      }
+   }
+```
+
+对于ShuffleMapTask而言，它的计算结果会写到BlockManager中，最终返回给DAGScheduler的是一个MapStatus对象。该对象管理了ShuffleMapTask的运算结果存储到BlockManager里的相关存储信息，而不是计算结果本身，这些存储信息将会成为下一阶段的任务需要获得的输入数据时的依据。其中ShuffleMapTask.runTask代码如下：
+
+```scala
+
+```
+
+对于ResultTask的runTask方法而言，它最终返回的是func函数的计算结果。
+
+```scala
+override def runTask(context: TaskContext): U = {
+  // Deserialize the RDD and the func using the broadcast variables.
+  val threadMXBean = ManagementFactory.getThreadMXBean
+  val deserializeStartTimeNs = System.nanoTime()
+  val deserializeStartCpuTime = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
+    threadMXBean.getCurrentThreadCpuTime
+  } else 0L
+  val ser = SparkEnv.get.closureSerializer.newInstance()
+  val (rdd, func) = ser.deserialize[(RDD[T], (TaskContext, Iterator[T]) => U)](
+    ByteBuffer.wrap(taskBinary.value), Thread.currentThread.getContextClassLoader)
+  _executorDeserializeTimeNs = System.nanoTime() - deserializeStartTimeNs
+  _executorDeserializeCpuTime = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
+    threadMXBean.getCurrentThreadCpuTime - deserializeStartCpuTime
+  } else 0L
+
+  // 最终返回func计算结果
+  func(context, rdd.iterator(partition, context))
+}
+```
+
+### 4.2.7 获取计算结果
+
+对于Executor的计算结果，会根据结果的大小有不同的策略。
 
 ## 4.4 容错及HA
 
