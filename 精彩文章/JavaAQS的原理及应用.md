@@ -196,3 +196,5 @@ private volatile int state;
 
 ![](img/Shared_State_locak.jpg)
 
+对于我们自定义的同步工具，需要自定义获取同步状态和释放状态的方式，也就是AQS架构图中的第一层：API层。
+

@@ -68,8 +68,92 @@ producer = new KafkaProducer<String, String>(kafkaProps); ➌
 
 实例化生产者对象后，接下来就可以开始发送消息了。发送消息主要有以下 3 种方式：
 
-- 发送并忘记(fire-and-forget)：我们把消息发送给服务器，但并不关心它是否正常到达。大多数情况下，消息会正常到 达，因为 Kafka 是高可用的，而且生产者会自动尝试重发。不过，使用这种方式有时候 也会丢失一些消息。
+- 发送并忘记(fire-and-forget)：我们把消息发送给服务器，但并不关心它是否正常到达。大多数情况下，消息会正常到达，因为 Kafka 是高可用的，而且生产者会自动尝试重发。不过，使用这种方式有时候也会丢失一些消息。
 - 同步发送：使用 send() 方法发送消息，它会返回一个 Future 对象，调用 get() 方法进行等待， 就可以知道消息是否发送成功。
 - 异步发送：调用 send() 方法，并指定一个回调函数，服务器在返回响应时调用该函数。
 
 本章的所有例子都使用单线程，但其实生产者是可以使用多线程来发送消息的。刚开始的时候可以使用单个消费者和单个线程。如果需要更高的吞吐量，可以在生产者数量不变的前提下增加线程数量。如果这样做还不够，可以增加生产者数量。
+
+## 3.3 发送消息到Kafka
+
+最简单的消息发送方式如下所示：
+
+```java
+ ProducerRecord<String, String> record = new ProducerRecord<>("CustomerCountry", "Precision Products",
+"France"); ➊
+try { 
+  producer.send(record); ➋
+} catch (Exception e) { 
+  e.printStackTrace(); ➌
+}
+```
+
+➊ 生产者的 send() 方法将 ProducerRecord 对象作为参数，所以我们要先创建一个 ProducerRecord 对象。ProducerRecord 有多个构造函数，稍后我们会详细讨论。这里使 用其中一个构造函数，它需要目标主题的名字和要发送的键和值对象，它们都是字符 串。键和值对象的类型必须与序列化器和生产者对象相匹配。
+
+➋ 我们使用生产者的 send() 方法发送 ProducerRecord 对象。从生产者的架构图里可以看 到，消息先是被放进缓冲区，然后使用单独的线程发送到服务器端。send() 方法会返回一个包含 RecordMetadata 的 Future 对象，不过因为我们会忽略返回值，所以无法知 道消息是否发送成功。如果不关心发送结果，那么可以使用这种发送方式。比如，记录 Twitter 消息日志，或记录不太重要的应用程序日志。
+
+➌ 我们可以忽略发送消息时可能发生的错误或在服务器端可能发生的错误，但在发送消 息之前，生产者还是有可能发生其他的异常。这些异常有可能是 SerializationException (说明序列化消息失败)、BufferExhaustedException 或 TimeoutException(说明缓冲区已满)，又或者是 InterruptException(说明发送线程被中断)。
+
+### 3.3.1 同步发送消息
+
+最简单的同步发送消息方式如下所示。
+
+```java
+ProducerRecord<String, String> record =new ProducerRecord<>("CustomerCountry", "Precision Products", "France");
+try {
+	producer.send(record).get(); ➊
+} catch (Exception e) { 
+  e.printStackTrace(); ➋
+}
+```
+
+➊ 在这里，producer.send() 方法先返回一个 Future 对象，然后调用 Future 对象的 get() 方法等待 Kafka 响应。如果服务器返回错误，get() 方法会抛出异常。如果没有发生错误，我们会得到一个RecordMetadata对象，可以用它获取消息的偏移量。
+
+➋ 如果在发送数据之前或者在发送过程中发生了任何错误，比如 broker 返回了一个不允许重发消息的异常或者已经超过了重发的次数，那么就会抛出异常。我们只是简单地把异常信息打印出来。
+
+KafkaProducer 一般会发生两类错误。其中一类是**可重试错误**，这类错误可以通过重发消息来解决。比如对于连接错误，可以通过再次建立连接来解决，“无主(no leader)”错误则可以通过重新为分区选举首领来解决。**KafkaProducer可以被配置成自动重试**，如果在多次重 试后仍无法解决问题，应用程序会收到一个重试异常。**另一类错误无法通过重试解决**，比如“消息太大”异常。对于这类错误，KafkaProducer 不会进行任何重试，直接抛出异常。
+
+### 3.3.2 异步发送消息
+
+假设消息在应用程序和 Kafka 集群之间一个来回需要 10ms。如果在发送完每个消息后都等待回应，那么发送100个消息需要1秒。但如果只发送消息而不等待响应，那么发送 100 个消息所需要的时间会少很多。大多数时候，我们并不需要等待响应——尽管 Kafka 会把目标主题、分区信息和消息的偏移量发送回来，但对于发送端的应用程序来说不是必需的。不过在遇到消息发送失败时，我们需要抛出异常、记录错误日志，或者把消息写入 “错误消息”文件以便日后分析。
+
+为了在异步发送消息的同时能够对异常情况进行处理，生产者提供了回调支持。下面是使用回调的一个例子。
+
+```java
+private class DemoProducerCallback implements Callback {➊ 
+    @Override
+    public void onCompletion(RecordMetadata recordMetadata, Exception e) {
+    if (e != null) {
+      e.printStackTrace(); ➋ 
+    }
+  } 
+}
+ProducerRecord<String, String> record =
+new ProducerRecord<>("CustomerCountry", "Biomedical Materials", "USA"); ➌
+producer.send(record, new DemoProducerCallback()); ➍
+```
+
+➊ 为了使用回调，需要一个实现了 org.apache.kafka.clients.producer.Callback 接口的 类，这个接口只有一个 onCompletion 方法。
+
+➋ 如果 Kafka 返回一个错误，onCompletion 方法会抛出一个非空(non null)异常。这里 我们只是简单地把它打印出来，但是在生产环境应该有更好的处理方式。
+
+➌ 记录与之前的一样。
+
+➍ 在发送消息时传进去一个回调对象
+
+------
+
+**顺序保证**
+
+**Kafka 可以保证同一个分区里的消息是有序的**。也就是说，如果生产者按照一定的顺序发送消息，broker 就会按照这个顺序把它们写入分区，消费者也 会按照同样的顺序读取它们。在某些情况下，顺序是非常重要的。例如，往 一个账户存入 100 元再取出来，这个与先取钱再存钱是截然不同的!不过， 有些场景对顺序不是很敏感。
+
+如果把 retries 设为非零整数，同时把max.in.flight.requests.per.connection设为比1大的数，那么，如果第一个批次消息写入失败，而第二个批次写入成功，broker会重试写入第一个批次。如果此时第一个批次也写入成功，那 么两个批次的顺序就反过来了。
+
+**严格有序设置**
+
+一般来说，如果某些场景要求消息是有序的，那么消息是否写入成功也是 很关键的，所以不建议把 retries 设为 0。可以把 `max.in.flight.requests. per.connection`设为 1，这样在生产者尝试发送第一批消息时，就不会有其他的消息发送给 broker。不过这样会严重影响生产者的吞吐量，所以只有在对消息的顺序有严格要求的情况下才能这么做。
+
+------
+
+## 3.5 序列化器
+
