@@ -198,3 +198,143 @@ private volatile int state;
 
 对于我们自定义的同步工具，需要自定义获取同步状态和释放状态的方式，也就是AQS架构图中的第一层：API层。
 
+## 2.2 AQS重要方法与ReentrantLock的关联
+
+从架构图中可以得知，AQS提供了大量用于自定义同步器实现的Protected方法。自定义同步器实现的相关方法也只是为了通过修改State字段来实现多线程的独占模式或者共享模式。自定义同步器需要实现以下方法(ReentrantLock需要实现的方法如下，并不是全部)：
+
+| 方法名                                      | 描述                                                         |
+| :------------------------------------------ | :----------------------------------------------------------- |
+| protected boolean isHeldExclusively()       | 该线程是否正在独占资源。只有用到Condition才需要去实现它。    |
+| protected boolean tryAcquire(int arg)       | 独占方式。arg为获取锁的次数，尝试获取资源，成功则返回True，失败则返回False。 |
+| protected boolean tryRelease(int arg)       | 独占方式。arg为释放锁的次数，尝试释放资源，成功则返回True，失败则返回False。 |
+| protected int tryAcquireShared(int arg)     | 共享方式。arg为获取锁的次数，尝试获取资源。负数表示失败；0表示成功，但没有剩余可用资源；正数表示成功，且有剩余资源。 |
+| protected boolean tryReleaseShared(int arg) | 共享方式。arg为释放锁的次数，尝试释放资源，如果释放后允许唤醒后续等待结点返回True，否则返回False。 |
+
+一般来说，自定义同步器要么是独占方式，要么是共享方式，它们也只需实现tryAcquire-tryRelease、tryAcquireShared-tryReleaseShared中的一种即可。AQS也支持自定义同步器同时实现独占和共享两种方式，如ReentrantReadWriteLock。ReentrantLock是独占锁，所以实现了tryAcquire-tryRelease。
+
+以非公平锁为例，这里主要阐述一下非公平锁与AQS之间方法的关联之处，具体每一处核心方法的作用会在文章后面详细进行阐述。
+
+<img src="img/unfairlock_AQS.jpg" style="zoom:80%;" />
+
+为了帮助大家理解ReentrantLock和AQS之间方法的交互过程，以非公平锁为例，我们将加锁和解锁的交互流程单独拎出来强调一下，以便于对后续内容的理解。
+
+![](img/unfairlock_flow.jpg)
+
+**加锁**
+
+- 通过ReentrantLock的加锁方法Lock进行加锁操作。
+- 会调用到内部类Sync的Lock方法，由于Sync#lock是抽象方法，根据ReentrantLock初始化选择的公平锁(fairSync)和非公平锁(NofairSync)，执行相关内部类的Lock方法，本质上都会执行AQS的Acquire方法。
+- AQS的Acquire方法会执行tryAcquire方法，但是由于tryAcquire需要自定义同步器实现，因此执行了ReentrantLock中的tryAcquire方法，由于ReentrantLock是通过公平锁和非公平锁内部类实现的tryAcquire方法，因此会根据锁类型不同，执行不同的tryAcquire。
+- tryAcquire是获取锁逻辑，获取失败后，会执行框架AQS的后续逻辑，跟ReentrantLock自定义同步器无关
+
+**解锁**
+
+- 通过ReentrantLock的解锁方法Unlock进行解锁
+- Unlock会调用内部类Sync的Release方法，该方法继承于AQS
+- Release中会调用tryRelease方法，tryRelease需要自定义同步器实现，tryRelease只在ReentrantLock中的Sync实现，因此可以看出，释放锁的过程，并不区分是否为公平锁
+- 释放成功后，所有处理由AQS框架完成，与自定义同步器无关
+
+通过上面的描述，大概可以总结出ReentrantLock加锁解锁时API层核心方法的映射关系。
+
+![](img/reentranrlock_lock_unlock_rel.jpg)
+
+## 2.3 通过ReentrantLock理解AQS
+
+ReentrantLock中公平锁和非公平锁在底层是相同的，这里以非公平锁为例进行分析。
+
+在非公平锁中，有一段这样的代码：
+
+```java
+// java.util.concurrent.locks.ReentrantLock
+
+static final class NonfairSync extends Sync {
+	...
+	final void lock() {
+		if (compareAndSetState(0, 1))
+			setExclusiveOwnerThread(Thread.currentThread());
+		else
+			acquire(1);
+	}
+  ...
+}
+```
+
+看一下这个Acquire是怎么写的：
+
+```java
+// java.util.concurrent.locks.AbstractQueuedSynchronizer
+
+public final void acquire(int arg) {
+	if (!tryAcquire(arg) && acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+		selfInterrupt();
+}
+```
+
+再看一下tryAcquire方法：
+
+```java
+// java.util.concurrent.locks.AbstractQueuedSynchronizer
+
+protected boolean tryAcquire(int arg) {
+	throw new UnsupportedOperationException();
+}
+```
+
+可以看出，这里只是AQS的简单实现，具体获取锁的实现方法是由各自的公平锁和非公平锁单独实现的(例如ReentrantLock)。如果该方法返回了True，则说明当前线程获取锁成功，就不用往后执行了；如果获取失败，就需要加入到等待队列中。下面会详细解释线程是何时以及怎样被加入进等待队列中的。
+
+### 2.3.1 线程加入等待队列
+
+#### 2.3.1.1 加入队列的时机
+
+当执行Acquire(1)时，会通过tryAcquire获取锁。在这种情况下，如果获取锁失败，就会调用addWaiter加入到等待队列中去。
+
+#### 2.3.1.2 加入队列的方式
+
+获取锁失败后，会执行addWaiter(Node.EXCLUSIVE)加入等待队列，具体实现方法如下：
+
+```java
+// java.util.concurrent.locks.AbstractQueuedSynchronizer
+
+private Node addWaiter(Node mode) {
+	Node node = new Node(Thread.currentThread(), mode);
+	// Try the fast path of enq; backup to full enq on failure
+	Node pred = tail;
+	if (pred != null) {
+		node.prev = pred;
+		if (compareAndSetTail(pred, node)) {
+			pred.next = node;
+			return node;
+		}
+	}
+	enq(node);
+	return node;
+}
+
+private final boolean compareAndSetTail(Node expect, Node update) {
+	return unsafe.compareAndSwapObject(this, tailOffset, expect, update);
+}
+```
+
+主要流程如下：
+
+- 通过当前的线程和锁模式新建一个节点。
+- Pred指针指向尾节点Tail。
+- 将New中Node的Prev指针指向Pred。
+- 通过compareAndSetTail方法，完成尾节点的设置。这个方法主要是对tailOffset和Expect进行比较，如果tailOffset的Node和Expect的Node地址是相同的，那么设置Tail的值为Update的值。
+
+```java
+// java.util.concurrent.locks.AbstractQueuedSynchronizer
+
+static {
+	try {
+		stateOffset = unsafe.objectFieldOffset(AbstractQueuedSynchronizer.class.getDeclaredField("state"));
+		headOffset = unsafe.objectFieldOffset(AbstractQueuedSynchronizer.class.getDeclaredField("head"));
+		tailOffset = unsafe.objectFieldOffset(AbstractQueuedSynchronizer.class.getDeclaredField("tail"));
+		waitStatusOffset = unsafe.objectFieldOffset(Node.class.getDeclaredField("waitStatus"));
+		nextOffset = unsafe.objectFieldOffset(Node.class.getDeclaredField("next"));
+	} catch (Exception ex) { 
+    throw new Error(ex); 
+  }
+}
+```
+
