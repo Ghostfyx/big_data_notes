@@ -100,6 +100,7 @@ PCollection<KV<String, Integer>> scores = input
 为了更好地了解实际中的如何使用窗口，来看一下的上边提到的整数求和Pipeline，使用了长度为2分钟的时间窗口。 使用Dataflow SDK，只需要简单的添加Window.into Transform变化即可（以蓝色文本突出显示）：
 
 ```java
+# Listing 2
 PCollection<KV<String, Integer>> scores = input
   .apply(Window.into(FixedWindows.of(Duration.standardMinutes(2))))
   .apply(Sum.integersPerKey());
@@ -123,5 +124,161 @@ PCollection<KV<String, Integer>> scores = input
 
 ​														**事件时间进度, 偏差, 和watermark**
 
-图中表示现实(reality)的曲折红线本质上是WaterMark。随着处理时间的推移，它跟踪事件时间完整性的进度。
+图中表示现实(reality)的曲折红线本质上是WaterMark。随着处理时间的推移，它跟踪事件时间完整性的进度。在概念上，可以将Watermark视为函数$F(P) \rightarrow E$，在处理时间中选取一个点，返回事件时间的一个点。更准确的说，对函数的输入实际上是在pipeline中观察到Watermark的点上游的一切的当前状态：输入源，缓冲数据，正在处理的数据等；但在概念上，将其视为从处理时间到事件时间的映射更简单。事件时间点E是系统认为事件时间小于E的所有数据都到齐了。换句话说，这是一个断言，不再有更多的事件时间少于E的数据。根据Watermark的类型：理想或启发式，这种断言可能是严格的保证或经过训练的猜测：
 
+- **理想Watermark**
+
+在完全了解所有输入数据的情况下，可以构建理想的Watermark; 在这种情况下，没有延迟数据; 所有数据都提前或准时到达。
+
+- **启发式Watermark**
+
+对于许多分布式输入源，完全了解输入数据是不切实际的。在这种情况下，最佳选择实际提供启发式Watermark。 启发式**Watermark**使用任何有关输入的信息(分区，分区内排序，文件增长率等)，以提供尽可能准确的进度估计。 在许多情况下，启发式**Watermark**可以预测的非常准确。 即使如此，使用启发式**Watermark**意味着它有时可能是不正确的的，这将导致有些数据被划分为延迟数据。 我们将在下面的触发器部分中了解如何处理延迟数据。
+
+**Watermark**是一个有趣和复杂的话题。现在，为了更好地了解**Watermark**的作用以及缺点，我们来看一下使用**Watermark**的流处理引擎的两个例子，以确定何时在Listing 2中执行使用窗口的**Pipeline**时实现输出。左边的例子使用理想的**Watermark**; 右边的一个使用启发式**Watermark**。
+
+[![img](https://embedwistia-a.akamaihd.net/deliveries/1ca8c3335e912cd17061ca15889d2e1c27098de2.jpg?image_play_button_size=2x&image_crop_resized=960x344&image_play_button=1&image_play_button_color=7b796ae0)](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=zbl7xyy294)
+
+[图6. 在流处理引擎上使用理想（左）和推测(右)Watermark进行基于窗口的求和](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=zbl7xyy294)
+
+在这两种情况下，当Watermark通过窗口末尾时，窗口被触发计算。两个执行的主要区别在于右侧的**Watermark**计算中使用的启发式算法，值9因为迟到的问题而没有被计算在内，这大大改变了水印的形状。这些例子突出了**Watermark**的两个缺点，具体如下：
+
+1. **太慢**
+
+当任何类型的Watermark，由于已知的未处理数据(例如，由于网络带宽约束而缓慢增长的输入日志)被正确延迟时，如果结果的计算只依赖Watermark的触发，将直接导致输出结果的延迟。
+
+这在左图中是最明显的，即迟到的9阻止所有后续窗口的Watermark，即使这些窗口的输入数据已经更早的达到并且是完整的了。第二个窗口[12:02，12:04]尤其明显，从窗口中的第一个值到达到窗口计算并输出结果的时间需要将近七分钟。这个例子中的启发式**Watermark**要稍微好一点（五分钟直到输出），但这不意味着启发式**Watermark**从来不会受到其他**Watermark**滞后的影响;在本例子选择了特殊的数据突出了这种对比。
+
+ 这里的重点在于：**Watermark**提供了一个非常有用的完整性概念，从延迟的角度来看，只考虑完整性是不够的。想象一下一个仪表板，显示重要的指标，按小时或天显示。我们不太可能想等待一整个小时或一天才能查看当前窗口的结果;这是使用经典批处理系统为这种系统提供数据的痛点之一。相反，随着输入的演变和最终的完成，这些窗口的结果会随着时间的推移而持续并不断的更新更好一些。
+
+2. **太快**
+
+当一个启发式**Watermark**比实际的**Watermark**更快的向前推进时，会导致原来没有延迟的数据变成了延迟数据。这是在右边的例子中发生的情况：在第1个窗口的输入数据全部到达之前，**Watermark**进入第1个窗口的末尾，导致错误的输出值为5而不是14。这个缺点是严格的启发式**Watermark**的问题;既然是启发式就意味着有时会是错误的。因此，如果关心正确性，单纯依靠**Watermark**确定何时计算结果并发出是不够的。
+
+在Streaming101中，对关于无限数据流的强大的无序处理不足的完整性概念作了一些强调。**Watermark**太慢或太快，是这些论据的基础。完全依赖于完整性概念的系统无法同时获得低延迟和正确性。触发器是解决这些缺点解决方案。
+
+### When:触发器
+
+触发器是问题的另一半答案："在处理时间维度上，什么时候该计算窗口的结果并发出？"触发器用来表明在处理时间维度上的哪个时刻该触发窗口计算结果(尽管触发器本身可能会根据其他时间触发，例如在事件时间维度上使用Watermark)。窗口的每个特定输出都称为窗口的**窗格(Pane)**。
+
+用于触发的信号的示例包括：
+
+- **Watermark进度**
+
+即事件时间进度，是图6中我们已经看到的隐式版本，当Watermark通过窗口的末尾时，计算结果并输出。另一个用例是在窗口的生命周期末尾时触发垃圾回收，稍后我们将看到一个例子。
+
+- **处理时间进度**
+
+对于提供定期更新是有用的，因为处理时间(不像事件时间)总是均匀地，没有延迟地演进。
+
+- **元素计数**
+
+在窗口中累积有n条数据之后触发
+
+- **Punctuations或其他依赖于数据的触发器**
+
+其中一些记录或特征(例如，EOF元素或刷新事件)指示应当生成输出。
+
+除了基于具体信号触发的简单触发器之外，还有复合触发器，允许创建更复杂的触发逻辑。示例复合触发器如下：
+
+- **Repeat重复触发器**
+
+重复触发器特别适用于处理时间触发器以提供定期更新
+
+- **AND触发器（逻辑AND）**
+
+所有子触发器都符合触发条件才触发（例如，在Watermark通过窗口结束之后，我们观察到一个终止的标点符号记录），它才会触发。
+
+- **Or触发器（逻辑或）**
+
+子触发器中的任何一个符合触发条件都会引起触发(例如，在水印通过窗口结束之后或我们观察到终止的标点符号记录)时。
+
+- **Sequence触发器**
+
+以子触发器按照预定义的顺序触发子依次触发。
+
+ 为了使触发器的概念更具体，继续介绍图6中使用的隐式默认触发器，将其添加到Listing2中的代码中：
+
+```java
+PCollection<KV<String, Integer>> scores = input
+ .apply(Window.into(FixedWindows.of(Duration.standardMinutes(2)))
+               .triggering(AtWatermark()))
+  .apply(Sum.integersPerKey());
+```
+
+​													**Listing3. 明确设定默认触发器**
+
+对触发器能够做什么有了基本的了解，可以开始考虑解决**Watermark**太慢或太快的问题。在这两种情况下，我们希望在**Watermark**超过窗口末尾之前或之后能够有机会计算窗口的结果，并能够提供持续更新机制(除了**Watermark**超过窗口末尾那一刻)。所以，需要一些多次触发触发器。那么问题就变成了：多次触发用来干什么？
+
+- **太慢的情况下**，即提供提前的推测结果，我们可能应该假设任何给定窗口都可能有稳定数量的传入数据，因为到目前为止，该窗口观察到的输入尚不完整。这样，在处理时间提前时(例如，每分钟一次)，定期触发可能是明智的选择，因为触发触发的次数将不取决于窗口实际观察到的数据量； 在最坏的情况下，我们只会不断触发周期性的触发
+- **太快的情况下**，即，由于启发式Watermark可能存在错误的推测，所以需要一种机制去能够处理延时数据去修正计算结果。假设Watermark基于相对准确的启发式，在这种情况下，预计不会经常看到延迟很久的数据，但是在实际中确实存在挺多延迟数据，不过结果很快会得到修正。每收到1个延时数据触发一次的策略，能够让我们更快的修正更新计算结果，但是由于预期的后期数据不频繁，应该不会给系统带来大的冲击。请注意，这些只是示例：如果有不同的应用场景，可以自由选择不同的触发器（或选择不适用触发器）。
+
+   最后，我们需要协调这些各种触发器的时间安排：提前，准时和延迟。我们可以使用**Sequence**触发器和一个特殊的**OrFinally**触发器组合来实现，**OrFinally**触发器用来中止这个组合触发器。
+
+```java
+PCollection<KV<String, Integer>> scores = input
+ .apply(Window.into(FixedWindows.of(Duration.standardMinutes(2)))
+               .triggering(Sequence(
+        Repeat(AtPeriod(Duration.standardMinutes(1)))
+                   .OrFinally(AtWatermark()),
+                 Repeat(AtCount(1))))
+  .apply(Sum.integersPerKey());
+```
+
+ 如上所示，伪代码看起来不错，给出了提前、准时、延迟触发的常用模式，使用略有不便，对应在**Dataflow**中，提供了一个定制（但语义上相当的）API，使得更容易使用这样的触发器，如下所示：
+
+```java
+ PCollection<KV<String, Integer>> scores = input
+  .apply(Window.into(FixedWindows.of(Duration.standardMinutes(2)))
+               .triggering(
+                 AtWatermark()
+                   .withEarlyFirings(AtPeriod(Duration.standardMinutes(1)))
+                   .withLateFirings(AtCount(1))))
+  .apply(Sum.integersPerKey());
+```
+
+​											**清单5.  使用early/late api指定提前和延迟触发**
+
+   在流处理引擎上执行清单4或清单5中的示例（包含了理想的**Watermark**和启发式的**Watermak**），如下所示：
+
+[![img](https://embed-fastly.wistia.com/deliveries/a12e5efa572e0fb6d0c5ae9d5db1094676f6ef53.jpg?image_play_button_size=2x&image_crop_resized=960x344&image_play_button=1&image_play_button_color=7b796ae0)](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=li3chq4k3t)
+
+[图 7. 在流处理引上执行基于窗口的求和，使用提前和延迟触发](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=li3chq4k3t)
+
+   这个版本对图6有两个明显的改进：
+
+- 对于第二个窗口中的“**Watermark**太慢”的情况，[12:02，12:04]：我们现在每分钟提供一次定期的提前计算。在理想的Watermark案例中，差异最为突出，其中时间到首次输出从近7分钟降至3分半;在启发式案例中也有明显改善。这两个版本现在都可以随着时间的推移而稳定地进行计算和修正计算结果（具有值7,14，然后是22的窗格），降低了从数据输入到得到计算结果之间的延迟。
+- 对于第一个窗口中的“启发式**Watermark**太快”的情况，[12:00，12:02]：当9的值延迟到达时，立即将其合并到一个值为14的新的修正的窗格中。
+
+这些新触发器的一个有趣的副作用是，它们有效地使理想和启发式**Watermark**版本之间的输出模式标准化。而图6中的两个版本是截然不同的，而现在这两个版本看起来很相似。
+
+此时剩下的最大差异是窗口生命周期。在理想的**Watermark**案例中，当**Watermark**超过窗口末尾后，窗口过期，窗口中的数据再也不会被处理，可以被安全的回收。在启发式**Watermark**案例中，我们仍然需要保留窗口一段时间来处理延迟数据。但是到目前为止，系统没有任何好的方式知道每个窗口需要保留多长时间。这是最大允许延迟的用武之地。
+
+### When: 最大允许延迟(超过即可回收)
+
+ 在谈到最后一个问题（“如何修正结果？”）之前，先来聊一下持续运行、乱序数据流处理系统中的实际面对的问题：垃圾收集。在图7中的启发式Watermark示例中，每个窗口的持续状态在该示例的整个生命周期内都会持续；这是必要的，以便在延迟数据到达时，适当地处理。但是，尽管能够保留所有持续状态，直到数据全部处理完毕。实际上，当处理无限数据源时，一直保留给定窗口的状态(包括元数据)通常是不切实际;最终会耗尽内存、磁盘等的空间。
+
+因此，任何现实世界的无序处理系统都需要提供一些限制其正在处理的窗口的生命周期的方法。最简洁的实现方在系统内定义一个最大允许延迟的边界，即限制任何给定记录最晚到达时间(相对于Watermark时间)不能超过这个时间；任何超过这个时间的数据不再处理，直接丢弃掉。定义了最大允许延迟之后，还需要准确地确定窗口需要保留的时间：直到Watermark超过了窗口的末尾时间+最大允许延迟时间。允许系统丢弃超过最大延迟的数据，还能够节省系统的计算资源。
+
+由于最大允许延迟和Watermark之间的相互作用有点晦涩，举个例子说明一下。我们来看一下清单5 /图7中的启发式Watermark Pipeline，并添加1分钟的最大允许延迟时间（请注意，之所以选择1分钟是为了更好的在图中说明概念，在现实世界中需要根据场景来确定合理的最大允许延迟时间）：
+
+```java
+PCollection<KV<String, Integer>> scores = input
+  .apply(Window.into(FixedWindows.of(Duration.standardMinutes(2)))
+               .triggering(
+                 AtWatermark()         .withEarlyFirings(AtPeriod(Duration.standardMinutes(1)))
+                   .withLateFirings(AtCount(1)))
+       .withAllowedLateness(Duration.standardMinutes(1)))
+  .apply(Sum.integersPerKey());
+```
+
+**Listing 6 带有最大允许延迟的提前和延迟触发**
+
+这个Pipeline的执行看起来像下面的图8所示，添加了以下功能来突出显示允许的延迟效应：
+
+- 加粗的水平方向的白线表示当前的处理时间，注释为Lateness Horizon的小刻度表示窗口的最大延时线（事件时间）。
+- 一旦Watermark超过窗口的最大延迟线，该窗口将被回收，这意味着窗口的所有信息都将被销毁
+- 虚线的矩形，表示窗口关闭时窗口覆盖的时间范围（在处理时间和事件时间两个维度上），一个小尾巴向右延伸，以表示窗口的延迟水平（与Watermark对照）。
+
+[![img](https://embedwistia-a.akamaihd.net/deliveries/4bc76118539bfe60869ec06e6b6919b6e48d0ff2.jpg?image_play_button_size=2x&image_crop_resized=960x643&image_play_button=1&image_play_button_color=7b796ae0)](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=muwcqnrmxf)
+
+[图8：在流处理引擎上切分窗口并计算，窗口使用提前、延迟触发，并设置了最大允许延迟时间](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=muwcqnrmxf)
