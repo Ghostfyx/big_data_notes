@@ -282,3 +282,179 @@ PCollection<KV<String, Integer>> scores = input
 [![img](https://embedwistia-a.akamaihd.net/deliveries/4bc76118539bfe60869ec06e6b6919b6e48d0ff2.jpg?image_play_button_size=2x&image_crop_resized=960x643&image_play_button=1&image_play_button_color=7b796ae0)](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=muwcqnrmxf)
 
 [图8：在流处理引擎上切分窗口并计算，窗口使用提前、延迟触发，并设置了最大允许延迟时间](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=muwcqnrmxf)
+
+   关于最大迟延线的两个最后的说明：
+
+- 要完全清楚，如果正在从能够提供理想Watermark的资源中获取数据，则无需处理延迟数据，而0秒的最大延迟时间将是最佳的。这是我们在图7的理想Watermark部分中看到的。
+- 有一些例外情况不需要指定最大延迟，即使在使用启发式Watermark时，比如在数据覆盖的时间的范围内，对有限的key进行统计(例如，数据覆盖的时间的范围内，按照Web浏览器分组，统计网站的总访问次数)。在这种情况下，系统中活动窗口的数量受限于使用的Key的数量。只要Key的数量仍然很低，就无须通过设置最大允许的延迟时间来限制窗口的生命周期。
+
+## How: 累积
+
+   随着时间推移，触发器被用于为一个窗口生成多个窗格，我们发现自己面临最后一个问题：“如何随着时间修正结果？”在我们已经看到的例子中，每个窗格建立在其前一个窗格基础之上。然而，实际上有三种不同的累积方式：
+
+- **丢弃**
+
+每当窗格计算完毕时，任何存储的窗口状态都将被丢弃。这意味着每个窗格与之前的窗格都是相互独立的。当下游消费者本省在执行某种叠加时，例如当将整数发送到希望自己计算总和的系统时，丢弃模式是有用的，下游系统将数据累加在一起形成最后的结果。
+
+- **累加**
+
+如图7所示，每当窗格计算完毕时，保留该窗格所有的状态，未来输入的数据会累加到并更新现有状态。这意味着窗格是建立在前面窗格的基础之上的。以后的结果可以简单地覆盖以前的结果，例如在诸如BigTable或HBase的键/值存储中存储输出结果时，累加模式很有用。
+
+- **累加和撤销**
+
+像累加模式一样，但是当生成新窗格时，同时会为前一个窗格生成1个独立的撤销。撤销（与新的累加结果一起）本质上是在表达，“我以前告诉过你的结果是X，但我错了。撤销我上次告诉你的X，并将其替换为Y.“有两种情况，撤销是特别有用的：
+
+1. 当下游消费者将不同维度的数据重新分组时，新值可能会与先前的值不同，因此最终会在不同的组中。在这种情况下，新值不能简单的覆盖旧值;需要从旧组中删除旧值，然后将新值添加到新组中。
+2.  当使用动态窗口（例如，后边会有更详细的介绍）时，由于窗口合并，新值可能会替换多个旧窗口。在这种情况下，只从新窗口的信息中难以确定哪些旧窗口中需要撤销。对于旧的窗口进行明确的撤销使得任务变得简单明了。
+
+放在一起看时，每个类型的累加语义会更清晰。考虑图7中第二个窗口的三个窗格（事件时间范围[12:02，12:04））。下表显示了三个支持的累加模式（每个窗格的值）将在三种支持的累加模式中显示（累积模式是图7中使用的特定模式）：
+
+​								**表1. 对比三种累积模式，使用了图7中的第2个窗口**
+
+|                         | Discarding | **Accumulating** | **Accumulating & Retracting** |
+| :---------------------- | :--------- | :--------------- | ----------------------------- |
+| **Pane 1: [7]**         | 7          | 7                | 7                             |
+| **Pane 2: [3, 4]**      | 7          | 14               | 14, -7                        |
+| **Pane 3: [8]**         | 8          | 22               | 22, -14                       |
+| **Last Value Observed** | 8          | 22               | 22                            |
+| **Total Sum**           | 22         | 51               | 22                            |
+
+- **丢弃**
+
+每个窗格仅包含在特定窗格中到达的值。因此，该窗口的最终值是最后一个窗格的值，而不是总和。但是，如果要自己计算所有独立窗格，将得到正确的答案22。这就是为什么丢弃模式下，下游消费者自己在窗格上执行聚合时很有用。
+
+- **累加**
+
+如图7所示，每个窗格包含在该特定窗格中到达的值以及前一个窗格中的所有值。因此，最后一个窗格的值是该窗口所有值的总和22。但是，如果要自己累加该窗口的所有窗格，则会对来自窗格2和窗格1的输入进行双重和三重计数，给出的总和是不正确的51.这就是为什么累加模式是最有用的，可以简单地用新的值覆盖以前的值，新值已经包含了迄今为止收到的所有数据。
+
+- **累积和撤销**
+
+每个窗格都包含一个新的累加模式值以及前一个窗格值的撤销。因此，观察到的最后（非撤销）值以及所有窗格（包括撤销）的总和是正确的答案22.这就是为什么撤回是如此强大。
+
+```java
+PCollection<KV<String, Integer>> scores = input
+  .apply(Window.into(FixedWindows.of(Duration.standardMinutes(2)))
+               .triggering(
+                 AtWatermark()
+                   .withEarlyFirings(AtPeriod(Duration.standardMinutes(1)))
+                   .withLateFirings(AtCount(1)))
+               .discardingFiredPanes())
+  .apply(Sum.integersPerKey());
+```
+
+   在流处理引擎的执行如下所示:
+
+[![img](https://embed-fastly.wistia.com/deliveries/3fef7a569ee1cf9e44c4a4859ef059c9c815fde5.jpg?image_play_button_size=2x&image_crop_resized=960x674&image_play_button=1&image_play_button_color=7b796ae0)](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=ksse5yiq3u)
+
+[在流处理引擎上，执行累加和撤销模式，使用提前/延迟触发](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=ksse5yiq3u)
+
+由于每个窗口的窗格都是重叠的，所以看起来有点乱。 撤销用红色表示，它与蓝色窗格结合重叠，看起来略带紫色。 在一个给定的窗格中略微移动了两个输出的值（并用逗号分隔），使它们更容易区分。
+
+将图9,7（启发式）和10的三张图动画效果的最终图放在一起，提供了三种模式的很好的视觉对比：
+
+![](../img/Figure11-V2.jpg)
+
+​													**图 11. 丢弃模式、累加模式、累加&撤回模式对比**
+
+从左到右是丢弃模式、累加模式、累加&撤回模式，三种模式需要的存储和计算成本依次递增。可以想像，在存储和计算成本方面，呈现的顺序(丢弃，累加，累加和撤回)的模式都相继更昂贵。 为此，累积提供了一种新的维度，在正确性，延迟和成本的之间进行权衡。
+
+# 小结
+
+   到此为止，我们接触了4个问题：
+
+- What要计算什么结果? Transform.
+- Where在事件时间中的哪个位置计算结果？窗口
+- When在处理时间中的哪个时刻触发计算结果？Watermark和触发器
+- How如何修正结果？累积
+
+我们目前只了解了一种窗口类型：基于事件时间的固定窗口。 从Streaming 101中我们提到了多种窗口，其中有两个是今天要详细阐述的：基于处理时间的固定窗口，基于事件时间的会话窗口。
+
+## When/Where: 基于处理时间的窗口
+
+   处理时间窗口重要的原因有两个：
+
+- 对于某些使用情况，例如使用情况监控(例如，Web服务流量QPS)，希望在收到数据流时分析数据，处理时间窗口绝对是适当的方法
+- 对于事件发生时间很重要的(例如，分析用户行为趋势，计费，评分等)的场景，处理时间窗口绝对是错误的选择，要能够清晰的区分哪些场景合适
+
+因此，值得深入了解处理时间窗口和事件时间窗口之间的差异，特别是考虑到当今大多数流处理系统中广泛使用了处理时间窗口。当使用模型时，例如在这篇文章中提到的，作为first class的窗口是严格基于事件时间的，有两种方法可以用来实现**处理时间**窗口：
+
+- **触发器：**忽略事件时间(即：使用跨越所有事件时间的全局窗口)，并使用触发器在处理时间轴中提供该窗口的快照。
+- **进入时间：**即数据到达系统的时间，将入口时间分配给数据作为事件时间，并使用正常的事件时间窗口进行后续处理。Spark Streaming中的处理时间就是这么做的。
+
+请注意，这两种方法或多或少等同，但在多处理步骤Pipeline的情况下略有不同：在触发器版本中，每个处理步骤都使用处理时间切分窗口，步骤之间相互独立，因此例如窗口$X$中的数据为 一个阶段可能会在下一阶段的窗口$X-1$或$X + 1$中；在进入时间版本中，一旦将数据归于窗口X中，由于不同的处理步骤时间使用Watermark同步处理进度(DataFlow做法)，在整个处理过程中都会一直属于窗口X。对micro-batch来说(Spark Streaming的做法)，micro-batch的边界或其他因素，是在引擎级别协调处理。
+
+正如一直强调的，处理时间窗口的最大缺点是，当输入的顺序发生变化时，窗口的内容会发生变化。 为了更具体地说明这一点，我们来看这三种用例：
+
+- 事件时间窗口
+- 使用触发器的处理时间窗口
+- 使用进入时间的处理时间窗口
+
+我们将每个窗口应用到两个不同的输入数据集(总共有6个变体)。两个输入数据包含完全相同的事件(即相同的值，发生在相同的事件时间)，但顺序不同。 第1个数据集跟我们之前例子中的顺序一致，颜色为白色; 第二个数据集调整了事件的处理顺序，如下图12所示，为紫色。
+
+[![img](https://embed-fastly.wistia.com/deliveries/1489e8718ce80589784e51ec150bb4cf08d8577e.jpg?image_play_button_size=2x&image_crop_resized=960x637&image_play_button=1&image_play_button_color=7b796ae0)](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=lf3v07a065)
+
+[Figure 12 - input toggle](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=lf3v07a065)
+
+### 基于事件时间的窗口Event-time windowing
+
+为了建立一个基线，我们首先将基于事件时间的使用启发式Watermark的固定窗口处理两个顺序不同的数据集。将重用listing 5/图 7中的提前/延迟处理的代码。如下。 左边实际上是我们以前看到的; 右边是第二个数据集的结果。 这里要注意的一点是：尽管输出的整体形状不同（由于处理时间不同），四个窗口的最终结果保持不变：14,22,3和12：
+
+[![img](https://embedwistia-a.akamaihd.net/deliveries/2b26fd31ca9629d521fe80d821c0b76de941ef74.jpg?image_play_button_size=2x&image_crop_resized=960x344&image_play_button=1&image_play_button_color=7b796ae0)](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=hnl6whv23j)
+
+[基于事件时间窗口处理两个内容一样但顺序不一样的输入数据集](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=hnl6whv23j)
+
+### 使用触发器的处理时间窗口
+
+现在我们来比较上述两种处理时间方法。 首先，将尝试触发器方法。使用处理时间窗口达到效果，需要考虑以下三个方面：
+
+- 窗口: 使用全局事件时间窗口，本质上是以事件窗格模拟处理时间窗口
+- 触发: 根据处理时间窗口的期望大小，在处理时间维度上周期性触发
+- 累加: 使用丢弃模式来保持窗格彼此独立，从而让每个窗格都像一个独立的处理时间窗口
+
+```java
+PCollection<KV<String, Integer>> scores = input
+  .apply(Window.triggering(
+                  Repeatedly(AtPeriod(Duration.standardMinutes(2))))
+               .discardingFiredPanes())
+  .apply(Sum.integersPerKey());
+```
+
+清单9. 在全局事件窗口上使用重发触发器、丢弃模式，模拟处理时间窗口
+
+当流处理引擎上输入两个不同顺序的数据集的时候，结果如下图14所示。 有趣的笔记与这个数字：由于我们了基于事件时间的窗格模拟处理时间窗口，所以在处理时间轴中勾画了“窗口”，这意味着窗口宽度是在Y轴上度量而不是X轴。由于处理时间窗口对输入数据的顺序敏感，在两个数据集中，每个窗口包含的数据都是不同的，即时事件发生的时间相同。 在左边我们得到12,21,18，而在右边我们得到7,36,4。
+
+[![img](https://embed-fastly.wistia.com/deliveries/328a112908da71728e15466166124afe085e802c.jpg?image_play_button_size=2x&image_crop_resized=960x301&image_play_button=1&image_play_button_color=7b796ae0)](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=befc8n62yh)
+
+[图14. 使用触发器模拟模拟处理时间窗口，处理两个内容一但顺序不一样的数据集](https://www.oreilly.com/radar/the-world-beyond-batch-streaming-102/?wvideo=befc8n62yh)
+
+### 使用接收时间的处理时间窗口
+
+   最后，我们来看看通过将输入数据的事件时间映射为入口时间来实现的处理时间窗口。在代码方面，这里有四个方面值得一提：
+
+- **Time-shifting**
+
+当数据到达时，数据的事件时间被接收时间(数据到达时的处理时间)覆盖。
+
+- **窗口**
+
+返回使用标准的固定事件时间窗口
+
+- **触发**
+
+由于入口时间提供了计算理想Watermark的能力，所以可以使用默认触发器，在这种情况下，当Watermark通过窗口的末尾时，触发器会隐式触发一次。
+
+- **累积模式**
+
+由于我们每个窗口只有一个输出，所以累积模式是无关紧要的。
+
+```java
+PCollection<String> raw = IO.read().withIngressTimeAsTimestamp();
+PCollection<KV<String, Integer>> input = raw.apply(ParDo.of(new ParseFn());
+PCollection<KV<String, Integer>> scores = input
+  .apply(Window.into(FixedWindows.of(Duration.standardMinutes(2))))
+  .apply(Sum.integersPerKey());
+```
+
+清单10. 明确的默认触发器
+
+在流式引擎上的执行将如下面的图15所示。当数据到达时，它们的事件时间被覆盖为它们的进入时间（即到达时的处理时间），导致在理想Watermark线上的向右水平移位。该图中有趣的注释：与其他处理时间窗口示例一样，当输入的顺序变化时，即使输入的值和事件时间保持不变，我们也会得到不同的结果。 - 与其他示例不同，窗口在事件时间维度上（因此沿X轴）重新划分了。尽管如此，这些窗口并不是原生的事件时间窗口;而是我们将处理时间简单地映射到事件时间上，擦除每个输入的原始记录，并用新的记录代替它，而事件的时间是表示Pipeline首次收到到数据的时间。 - 尽管如此，由于使用了Watermark，触发器仍然在与之前的处理时间示例完全相同的时间触发。此外，所产生的输出值与该示例相同，如左侧的12,21,18，右侧的7,36,4。 - 由于使用入口时间，所以理想的Watermark是可能的，所以实际的Watermark与理想的Watermark相匹配，斜率为1，向右上方延伸。
