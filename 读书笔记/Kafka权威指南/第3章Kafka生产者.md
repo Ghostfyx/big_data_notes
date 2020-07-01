@@ -287,3 +287,138 @@ Avro 有一个很有意思的特性是，当负责写消息的应用程序使用
 - 用于写入数据和读取数据的 schema 必须是相互兼容的。Avro 文档提到了一些兼容性 原则。
 - 反序列化器需要用到用于写入数据的 schema，即使它可能与用读取数据的 schema 不 一样。Avro 数据文件里就包含了用于写入数据的 schema，不过在 Kafka 里有一种更好的处理方式，下一小节我们会介绍它。
 
+### 3.5.3 在Kafka里使用Avro
+
+Avro 的数据文件里包含了整个 schema，不过这样的开销是可接受的。但是如果在每条 Kafka 记录里都嵌入 schema，会让记录的大小成倍地增加。不过不管怎样，在读取记录时仍然需要用到整个 schema，所以要先找到 schema。我们遵循通用的结构模式并使用“schema 注册表”来达到目的。schema 注册表并不属于 Kafka，现在已经有一些开源的 schema 注册表实现。在这个例子里，我们使用的是 Confluent Schema Registry。该注册表的代码可以在 GitHub 上找到，你也可以把它作为 Confluent 平台的一部分进行安装。如果你决定使用这个注册表，可以参考它的文档。
+
+我们把所有写入数据需要用到的 schema 保存在注册表里，然后在记录里引用 schema 的标 识符。负责读取数据的应用程序使用标识符从注册表里拉取 schema 来反序列化记录。**序列化器和反序列化器分别负责处理 schema 的注册和拉取**。Avro 序列化器的使用方法与其他序列化器是一样的。
+
+![](img/3-2.jpg)
+
+​													**图 3-2:Avro 记录的序列化和反序列化流程图**
+
+下面的例子演示了如何把生成的 Avro 对象发送到 Kafka(关于如何使用 Avro 生成代码请参考 Avro 文档):
+
+```java
+Properties props = new Properties();
+props.put("bootstrap.servers", "localhost:9092");
+props.put("key.serializer","io.confluent.kafka.serializers.KafkaAvroSerializer");
+props.put("value.serializer","io.confluent.kafka.serializers.KafkaAvroSerializer"); ➊ 
+props.put("schema.registry.url", schemaUrl); ➋
+String topic = "customerContacts";
+Producer<String, Customer> producer = new KafkaProducer<String,Customer>(props); ➌
+// 不断生成事件，直到有人按下Ctrl+C组合键 
+while (true) {
+    Customer customer = CustomerGenerator.getNext();
+    System.out.println("Generated customer " + customer.toString());
+    ProducerRecord<String, Customer> record = new ProducerRecord<>(topic, customer.getId(), customer); ➍ 
+    producer.send(record); ➎
+}
+```
+
+➊ 使用 Avro 的 KafkaAvroSerializer 来序列化对象。注意，AvroSerializer 也可以处理原语，这就是我们以后可以使用字符串作为记录键、使用客户对象作为值的原因。
+
+➋ schema.registry.url 是一个新的参数，指向 schema 的存储位置。
+
+➌ Customer 是生成的对象。我们会告诉生产者 Customer 对象就是记录的值。
+
+➍ 实例化一个 ProducerRecord 对象，并指定 Customer 为值的类型，然后再传给它一个Customer 对象。
+
+➎ 把 Customer 对象作为记录发送出去，KafkaAvroSerializer 会处理剩下的事情。
+
+如果你选择使用一般的 Avro 对象而非生成的 Avro 对象该怎么办?不用担心，这个时候你只需提供 schema 就可以了:
+
+```java
+Properties props = new Properties();
+props.put("bootstrap.servers", "localhost:9092");
+props.put("key.serializer","io.confluent.kafka.serializers.KafkaAvroSerializer"); ➊ props.put("value.serializer","io.confluent.kafka.serializers.KafkaAvroSerializer"); props.put("schema.registry.url", url); ➋
+String schemaString = "{\"namespace\": \"customerManagement.avro\",
+  \"type\": \"record\", " + ➌
+  "\"name\": \"Customer\"," +
+  "\"fields\": [" +
+  "{\"name\": \"id\", \"type\": \"int\"}," +
+  "{\"name\": \"name\", \"type\": \"string\"}," +
+  "{\"name\": \"email\", \"type\": [\"null\",\"string
+  \"], \"default\":\"null\" }" +
+  "]}";
+Producer<String, GenericRecord> producer = new KafkaProducer<String, GenericRecord>(props); ➍
+Schema.Parser parser = new Schema.Parser();
+Schema schema = parser.parse(schemaString);
+for (int nCustomers = 0; nCustomers < customers; nCustomers++) {
+  String name = "exampleCustomer" + nCustomers;
+  String email = "example" + nCustomers + "@example.com";
+  GenericRecord customer = new GenericData.Record(schema); ➎ 
+  customer.put("id", nCustomers);
+  customer.put("name", name);
+  customer.put("email", email);
+  ProducerRecord<String, GenericRecord> data = new ProducerRecord<String, name, customer);
+  producer.send(data);
+}  
+```
+
+➊ 仍然使用同样的 KafkaAvroSerializer。➋ 提供同样的 schema 注册表 URI。
+
+➌ 这里需要提供 Avro schema，因为我们没有使用 Avro 生成的对象。
+
+➍ 对象类型是 Avro GenericRecord，我们通过 schema 和需要写入的数据来初始化它。
+
+➎ProducerRecord 的值就是一个 GenericRecord 对象，它包含了 schema 和数据。序列化器知道如何从记录里获取 schema，把它保存到注册表里，并用它序列化对象数据。
+
+## 3.6 分区
+
+在之前的例子里，ProducerRecord 对象包含了目标主题、键和值。Kafka 的消息是一个个 键值对，ProducerRecord 对象可以只包含目标主题和值，键可以设置为默认的 null，不 过大多数应用程序会用到键。键有两个用途:可以作为消息的附加信息，也可以用来 决定消息该被写到主题的哪个分区。拥有相同键的消息将被写到同一个分区。也就是说，如果一个进程只从一个主题的分区读取数据(第 4 章会介绍更多细节)，那么具有相同键的所有记录都会被该进程读取。要创建一个包含键值的记录，只需像下面这样创建 ProducerRecord 对象：
+
+```java
+ProducerRecord<Integer, String> record = new ProducerRecord<>("CustomerCountry", "Laboratory Equipment", "USA");
+```
+
+如果要创建键为 null 的消息，不指定键就可以了：
+
+```java
+ProducerRecord<Integer, String> record = new ProducerRecord<>("CustomerCountry", "USA"); ➊
+```
+
+➊ 这里的键被设为 null。
+
+如果键值为 null，并且使用了默认的分区器，那么记录将被随机地发送到主题内各个可用的分区上。分区器使用轮询(Round Robin)算法将消息均衡地分布到各个分区上。
+
+如果键不为空，并且使用了默认的分区器，那么 Kafka 会对键进行散列(使用 Kafka 自己的散列算法，即使升级 Java 版本，散列值也不会发生变化)，然后根据散列值把消息映射到特定的分区上。这里的关键之处在于，同一个键总是被映射到同一个分区上，所以在进行映射时，我们会使用主题所有的分区，而不仅仅是可用的分区。这也意味着，如果写入数据的分区是不可用的，那么就会发生错误。但这种情况很少发生。我们将在第 6 章讨论 Kafka 的复制功能和可用性。
+
+只有在不改变主题分区数量的情况下，键与分区之间的映射才能保持不变。举个例子，在 分区数量保持不变的情况下，可以保证用户 045189 的记录总是被写到分区 34。在从分 区读取数据时，可以进行各种优化。不过，一旦主题增加了新的分区，这些就无法保证 了——旧数据仍然留在分区 34，但新的记录可能被写到其他分区上。如果要使用键来映射 分区，那么最好在创建主题的时候就把分区规划好(第 2 章介绍了如何确定合适的分区数量)，而且永远不要增加新分区。
+
+**实现自定义分区策略**
+
+我们已经讨论了默认分区器的特点，它是使用次数最多的分区器。不过，除了散列分区之 外，有时候也需要对数据进行不一样的分区。假设你是一个 B2B 供应商，你有一个大客 户，它是手持设备 Banana 的制造商。Banana 占据了你整体业务 10% 的份额。如果使用默 认的散列分区算法，Banana 的账号记录将和其他账号记录一起被分配给相同的分区，导致 这个分区比其他分区要大一些。服务器可能因此出现存储空间不足、处理缓慢等问题。我们需要给 Banana 分配单独的分区，然后使用散列分区算法处理其他账号。
+
+下面是一个自定义分区器的例子:
+
+```java
+import org.apache.kafka.clients.producer.Partitioner;
+import org.apache.kafka.common.Cluster;
+import org.apache.kafka.common.PartitionInfo;
+import org.apache.kafka.common.record.InvalidRecordException;
+import org.apache.kafka.common.utils.Utils;
+public class BananaPartitioner implements Partitioner {
+	public void configure(Map<String, ?> configs) {} ➊
+  public int partition(String topic, Object key, byte[] keyBytes,Object value, byte[] valueBytes,Cluster  						cluster) {
+  List<PartitionInfo> partitions = cluster.partitionsForTopic(topic);
+	int numPartitions = partitions.size();
+	if ((keyBytes == null) || (!(key instanceOf String))) ➋ throw new InvalidRecordException("We expect all     					messages o have customer name as key")
+	if (((String) key).equals("Banana"))
+			return numPartitions; // Banana总是被分配到最后一个分区
+	// 其他记录被散列到其他分区
+	return (Math.abs(Utils.murmur2(keyBytes)) % (numPartitions - 1)) 
+  }
+  public void close() {}
+}
+```
+
+➊Partitioner 接口包含了 configure、partition 和 close 这 3 个方法。这里我们只实现 partition 方法，不过我们真不应该在 partition 方法里硬编码客户的名字，而应该通 过 configure 方法传进来。
+
+➋ 我们只接受字符串作为键，如果不是字符串，就抛出异常。
+
+## 3.8 总结
+
+我们以一个生产者示例开始了本章的内容——使用 10 行代码将消息发送到 Kafka。然后我们在代码中加入错误处理逻辑，并介绍了同步和异步两种发送方式(发送回调函数)。接下来，我们介绍了 生产者的一些重要配置参数以及它们对生产者行为的影响。我们还讨论了用于控制消息格 式的序列化器，并深入探讨了 Avro——一种在 Kafka 中得到广泛应用的序列化方式。最后，我们讨论了 Kafka 的分区机制，并给出了一个自定义分区的例子。
+
+现在我们已经知道如何向 Kafka 写入消息，在第 4 章，我们将学习如何从 Kafka 读取消息。
