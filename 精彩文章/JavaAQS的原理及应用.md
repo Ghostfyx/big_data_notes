@@ -338,3 +338,183 @@ static {
 }
 ```
 
+从AQS的静态代码块可以看出，都是获取一个对象的属性相对于该对象在内存当中的偏移量，这样我们就可以根据这个偏移量在对象内存当中找到这个属性。tailOffset指的是tail对应的偏移量，所以这个时候会将new出来的Node置为当前队列的尾节点。同时，由于是双向链表，也需要将前一个节点指向尾节点。
+
+如果Pred指针是Null（说明等待队列中没有元素），或者当前Pred指针和Tail指向的位置不同（说明被别的线程已经修改），就需要看一下Enq的方法。
+
+```java
+// java.util.concurrent.locks.AbstractQueuedSynchronizer
+
+private Node enq(final Node node) {
+	for (;;) {
+		Node t = tail;
+		if (t == null) { // Must initialize
+			if (compareAndSetHead(new Node()))
+				tail = head;
+		} else {
+			node.prev = t;
+			if (compareAndSetTail(t, node)) {
+				t.next = node;
+				return t;
+			}
+		}
+	}
+}
+```
+
+如果没有被初始化，需要进行初始化一个头结点出来。但请注意，初始化的头结点并不是当前线程节点，而是调用了无参构造函数的节点。如果经历了初始化或者并发导致队列中有元素，则与之前的方法相同。其实，addWaiter就是一个在双端链表添加尾节点的操作，需要注意的是，双端链表的头结点是一个无参构造函数的头结点。
+
+总结一下，线程获取锁的时候，过程大体如下：
+
+1. 当没有线程获取到锁时，线程1获取锁成功。
+2. 线程2申请锁，但是锁被线程1占有。
+
+![](img/CLH_getLock.jpg)
+
+**如果再有线程要获取锁，依次在队列中往后排队即可**
+
+hasQueuedPredecessors是公平锁加锁时判断等待队列中是否存在有效节点的方法。如果返回False，说明当前线程可以争取共享资源；如果返回True，说明队列中存在有效节点，当前线程必须加入到等待队列中。
+
+```java
+// java.util.concurrent.locks.ReentrantLock
+
+public final boolean hasQueuedPredecessors() {
+	// The correctness of this depends on head being initialized
+	// before tail and on head.next being accurate if the current
+	// thread is first in queue.
+	Node t = tail; // Read fields in reverse initialization order
+	Node h = head;
+	Node s;
+	return h != t && ((s = h.next) == null || s.thread != Thread.currentThread());
+}
+```
+
+看到这里，我们理解一下h != t && ((s = h.next) == null || s.thread != Thread.currentThread());为什么要判断的头结点的下一个节点？第一个节点储存的数据是什么？
+
+> 双向链表中，第一个节点为虚节点，其实并不存储任何信息，只是占位。真正的第一个有数据的节点，是在第二个节点开始的。当h != t时： 如果(s = h.next) == null，等待队列正在有线程进行初始化，但只是进行到了Tail指向Head，没有将Head指向Tail，此时队列中有元素，需要返回True(这块具体见下边代码分析)。如果(s = h.next) != null，说明此时队列中至少有一个有效节点，如果此时s.thread == Thread.currentThread()，说明等待队列的第一个有效节点中的线程与当前线程相同，那么当前线程是可以获取资源的；如果s.thread != Thread.currentThread()，说明等待队列的第一个有效节点线程与当前线程不同，当前线程必须加入进等待队列。
+
+```java
+// java.util.concurrent.locks.AbstractQueuedSynchronizer#enq
+
+if (t == null) { // Must initialize
+	if (compareAndSetHead(new Node()))
+		tail = head;
+} else {
+	node.prev = t;
+	if (compareAndSetTail(t, node)) {
+		t.next = node;
+		return t;
+	}
+}
+```
+
+节点入队不是原子操作，所以会出现短暂的head != tail，此时Tail指向最后一个节点，而且Tail指向Head。如果Head没有指向Tail(可见5、6、7行)，这种情况下也需要将相关线程加入队列中。所以这块代码是为了解决极端情况下的并发问题。
+
+#### 2.3.1.3 等待队列中线程出队列时机
+
+回到最初的源码：
+
+```java
+// java.util.concurrent.locks.AbstractQueuedSynchronizer
+
+public final void acquire(int arg) {
+	if (!tryAcquire(arg) && acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+		selfInterrupt();
+}
+```
+
+上文解释了addWaiter方法，这个方法其实就是把对应的线程以Node的数据结构形式加入到双端队列里，返回的是一个包含该线程的Node。而这个Node会作为参数，进入到acquireQueued方法中。acquireQueued方法可以对排队中的线程进行“获锁”操作。
+
+总的来说，一个线程获取锁失败了，被放入等待队列，acquireQueued会把放入队列中的线程不断去获取锁，直到获取成功或者不再需要获取(中断)。
+
+下面我们从“何时出队列？”和“如何出队列？”两个方向来分析一下acquireQueued源码：
+
+```java
+// java.util.concurrent.locks.AbstractQueuedSynchronizer
+
+final boolean acquireQueued(final Node node, int arg) {
+	// 标记是否成功拿到资源
+	boolean failed = true;
+	try {
+		// 标记等待过程中是否中断过
+		boolean interrupted = false;
+		// 开始自旋，要么获取锁，要么中断
+		for (;;) {
+			// 获取当前节点的前驱节点
+			final Node p = node.predecessor();
+			// 如果p是头结点，说明当前节点在真实数据队列的首部，就尝试获取锁（别忘了头结点是虚节点）
+			if (p == head && tryAcquire(arg)) {
+				// 获取锁成功，头指针移动到当前node
+				setHead(node);
+				p.next = null; // help GC
+				failed = false;
+				return interrupted;
+			}
+			// 说明p为头节点且当前没有获取到锁（可能是非公平锁被抢占了）或者是p不为头结点，这个时候就要判断当前node是否要被阻塞（被阻塞条件：前驱节点的waitStatus为-1），防止无限循环浪费资源。具体两个方法下面细细分析
+			if (shouldParkAfterFailedAcquire(p, node) && parkAndCheckInterrupt())
+				interrupted = true;
+		}
+	} finally {
+		if (failed)
+			cancelAcquire(node);
+	}
+}
+```
+
+注：setHead方法是把当前节点置为虚节点，但并没有修改waitStatus，因为它是一直需要用的数据。
+
+```java
+// java.util.concurrent.locks.AbstractQueuedSynchronizer
+
+private void setHead(Node node) {
+	head = node;
+	node.thread = null;
+	node.prev = null;
+}
+
+// java.util.concurrent.locks.AbstractQueuedSynchronizer
+
+// 靠前驱节点判断当前线程是否应该被阻塞
+private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
+	// 获取头结点的节点状态
+	int ws = pred.waitStatus;
+	// 说明头结点处于唤醒状态
+	if (ws == Node.SIGNAL)
+		return true; 
+	// 通过枚举值我们知道waitStatus>0是取消状态
+	if (ws > 0) {
+		do {
+			// 循环向前查找取消节点，把取消节点从队列中剔除
+			node.prev = pred = pred.prev;
+		} while (pred.waitStatus > 0);
+		pred.next = node;
+	} else {
+		// 设置前任节点等待状态为SIGNAL
+		compareAndSetWaitStatus(pred, ws, Node.SIGNAL);
+	}
+	return false;
+}
+```
+
+parkAndCheckInterrupt主要用于挂起当前线程，阻塞调用栈，返回当前线程的中断状态。
+
+```java
+// java.util.concurrent.locks.AbstractQueuedSynchronizer
+
+private final boolean parkAndCheckInterrupt() {
+    LockSupport.park(this);
+    return Thread.interrupted();
+}
+```
+
+![](img/get_lock_flow.jpg)
+
+从上图可以看出，跳出当前循环的条件是当“前置节点是头结点，且当前线程获取锁成功”。为了防止因死循环导致CPU资源被浪费，我们会判断前置节点的状态来决定是否要将当前线程挂起，具体挂起流程用流程图表示如下（shouldParkAfterFailedAcquire流程）：
+
+![](img/shouldParkAfterFailedAcquire.jpg)
+
+从队列中释放节点的疑虑打消了，那么又有新问题了：
+
+- shouldParkAfterFailedAcquire中取消节点是怎么生成的呢？什么时候会把一个节点的waitStatus设置为-1？
+- 是在什么时间释放节点通知到被挂起的线程呢？
+

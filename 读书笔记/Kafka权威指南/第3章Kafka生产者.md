@@ -157,3 +157,133 @@ producer.send(record, new DemoProducerCallback()); ➍
 
 ## 3.5 序列化器
 
+我们已经在之前的例子里看到，创建一个生产者对象必须指定序列化器。我们已经知道如 何使用默认的字符串序列化器，Kafka 还提供了整型和字节数组序列化器，不过它们还不足以满足大部分场景的需求。到最后，我们需要序列化的记录类型会越来越多。
+
+接下来演示如何开发自己的序列化器，并介绍 Avro 序列化器作为推荐的备选方案
+
+### 3.5.1 自定义序列化器
+
+如果发送到 Kafka 的对象不是简单的字符串或整型，那么可以使用序列化框架来创建消息 记录，如 Avro、Thrift 或 Protobuf，或者使用自定义序列化器。我们强烈建议使用**通用的序列化框架**。不过，为了了解序列化器的工作原理，也为了说明为什么要使用序列化框 架，让我们一起来看看如何自定义一个序列化器。
+
+假设你创建了一个简单的类来表示一个客户:
+
+```java
+public class Customer {
+  private int customerID;
+  private String customerName;
+  public Customer(int ID, String name) {
+    this.customerID = ID;
+    this.customerName = name;
+    public int getID() {
+      return customerID;
+    }
+    public String getName() {
+      return customerName;
+    } 
+}
+```
+
+现在我们要为这个类创建一个序列化器，它看起来可能是这样的:
+
+```java
+import org.apache.kafka.common.errors.SerializationException;
+import java.nio.ByteBuffer;
+import java.util.Map;
+public class CustomerSerializer implements Serializer<Customer> {
+  @Override
+  public void configure(Map configs, boolean isKey) {
+    // 不做任何配置 }
+    @Override
+    /**
+Customer对象被序列化成:
+表示customerID的4字节整数 表示customerName长度的4字节整数(如果customerName为空，则长度为0) 表示customerName的N个字节
+*/
+    public byte[] serialize(String topic, Customer data) {
+      try {
+        byte[] serializedName;
+        int stringSize;
+        if (data == null)
+          return null;
+        else {
+          if (data.getName() != null) {
+            serializedName = data.getName().getBytes("UTF-8");
+            stringSize = serializedName.length;
+          } else {
+            serializedName = new byte[0];
+            stringSize = 0;
+          }
+        }
+        ByteBuffer buffer = ByteBuffer.allocate(4 + 4 + stringSize);
+        buffer.putInt(data.getID());
+        buffer.putInt(stringSize);
+        buffer.put(serializedName);
+        return buffer.array();
+      } catch (Exception e) {
+        throw new SerializationException("Error when serializing Customer to
+                                         byte[] " + e);
+      } 
+   }
+   @Override
+   public void close() {
+   // 不需要关闭任何东西
+   } 
+}
+```
+
+只要使用这个 CustomerSerializer，就可以把消息记录定义成 ProducerRecord<String, Customer>，并且可以直接把 Customer 对象传给生产者。这个例子很简单，不过代码看起 来太脆弱了——如果我们有多种类型的消费者，可能需要把 customerID 字段变成长整型， 或者为 Customer 添加 startDate 字段，这样就会出现新旧消息的兼容性问题。在不同版 本的序列化器和反序列化器之间调试兼容性问题着实是个挑战——你需要比较原始的字节数组。更糟糕的是，如果同一个公司的不同团队都需要往 Kafka 写入 Customer 数据，那 么他们就需要使用相同的序列化器，如果序列化器发生改动，他们几乎要在同一时间修改代码。
+
+基于以上几点原因，我们不建议使用自定义序列化器，而是使用已有的序列化器和反序列 化器，比如 JSON、Avro、Thrift 或 Protobuf。下面我们将会介绍 Avro，然后演示如何序列化 Avro 记录并发送给 Kafka。
+
+### 3.5.2 使用Avro序列化
+
+Apache Avro(以下简称 Avro)是一种与编程语言无关的序列化格式。Doug Cutting 创建了这个项目，目的是提供一种共享数据文件的方式。
+
+Avro 数据通过与语言无关的 schema 来定义。schema 通过 JSON 来描述，数据被序列化成二进制文件或 JSON 文件，不过一般会使用二进制文件。Avro 在读写文件时需要用到 schema，schema 一般会被内嵌在数据文件里。
+
+Avro 有一个很有意思的特性是，当负责写消息的应用程序使用了新的 schema，负责读消息的应用程序可以继续处理消息而无需做任何改动，这个特性使得它特别适合用在像 Kafka 这样的消息系统上。
+
+假设最初的 schema 是这样的:
+
+```json
+{"namespace": "customerManagement.avro",
+      "type": "record",
+      "name": "Customer",
+      "fields": [
+        {"name": "id", "type": "int"},
+        {"name": "name", "type": "string"},
+        {"name": "faxNumber", "type": ["null", "string"], "default": "null"} ➊
+      ] 
+}
+```
+
+➊ id 和 name 字段是必需的，faxNumber 是可选的，默认为 null。
+
+假设我们已经使用了这个 schema 几个月的时间，并用它生成了几个太字节的数据。现在，
+
+我们决定在新版本里做一些修改。因为在 21 世纪不再需要 faxNumber 字段，需要用 email字段来代替它。 新的 schema 如下:
+
+```json
+{"namespace": "customerManagement.avro",
+       "type": "record",
+       "name": "Customer",
+       "fields": [
+         {"name": "id", "type": "int"},
+         {"name": "name",  "type": "string"},
+         {"name": "email", "type": ["null", "string"], "default": "null"}
+       ] 
+}
+```
+
+更新到新版的 schema 后，旧记录仍然包含 faxNumber 字段，而新记录则包含 email 字段。 部分负责读取数据的应用程序进行了升级，那么它们是如何处理这些变化的呢?
+
+在应用程序升级之前，它们会调用类似 getName()、getId() 和 getFaxNumber() 这样的方 法。如果碰到使用新 schema 构建的消息，getName() 和 getId() 方法仍然能够正常返回， 但 getFaxNumber() 方法会返回 null，因为消息里不包含传真号码。
+
+在应用程序升级之后，getEmail() 方法取代了 getFaxNumber() 方法。如果碰到一个使用旧 schema 构建的消息，那么 getEmail() 方法会返回 null，因为旧消息不包含邮件地址。
+
+现在可以看出使用 Avro 的好处了:我们修改了消息的 schema，但并没有更新所有负责读 取数据的应用程序，而这样仍然不会出现异常或阻断性错误，也不需要对现有数据进行大 幅更新。
+
+不过这里有以下两个需要注意的地方。
+
+- 用于写入数据和读取数据的 schema 必须是相互兼容的。Avro 文档提到了一些兼容性 原则。
+- 反序列化器需要用到用于写入数据的 schema，即使它可能与用读取数据的 schema 不 一样。Avro 数据文件里就包含了用于写入数据的 schema，不过在 Kafka 里有一种更好的处理方式，下一小节我们会介绍它。
+
